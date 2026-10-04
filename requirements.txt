@@ -1,0 +1,7 @@
+telethon
+aiosqlite
+pydantic
+python-dotenv
+httpx
+fastapi
+uvicorn

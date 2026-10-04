@@ -1,0 +1,4 @@
+Location: <your city, country> (strictly ignore offline events in other cities/regions unless travel is funded or the event is online/in your city).
+Academic Profile: <your level, e.g. 1st-year CS undergraduate / university applicant, plus test scores and grades>.
+Target Opportunities: <what you want, e.g. admissions fairs, full-ride scholarships, undergraduate research, software engineering internships, hackathons, coding/math competitions>.
+Strictly Ignore: <what you never want, e.g. generic greetings, recaps of past events, events restricted to other age groups, paid courses/ads, offline events in inaccessible cities>.

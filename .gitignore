@@ -1,0 +1,21 @@
+# Secrets and Telegram logins: never commit these
+.env
+*.session
+*.session-journal
+
+# Personal data and runtime output
+default_profile.txt
+scout.db
+scout.db-journal
+scout.log
+
+# Python / local environment
+venv/
+__pycache__/
+*.pyc
+
+# Claude Code local settings and auto-sync log
+.claude/
+
+# Windows shortcuts
+*.lnk

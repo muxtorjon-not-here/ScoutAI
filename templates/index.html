@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScoutAI — Opportunity Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] } } } };
+</script>
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  html, body { background: #090D16; }
+  body {
+    background:
+      radial-gradient(900px 420px at 50% -120px, rgba(99,102,241,.25), transparent 70%),
+      radial-gradient(600px 300px at 90% 0, rgba(16,185,129,.08), transparent 70%),
+      #090D16;
+    background-attachment: fixed;
+    color: #e2e8f0;
+  }
+  .glass { background: rgba(15,23,42,.7); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(30,41,59,.8); transition: all .2s; }
+  .glass-hover:hover { border-color: rgba(99,102,241,.4); }
+  .card-in { animation: cardIn .25s ease-out; }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinning svg { animation: spin 1s linear infinite; }
+  .glow-emerald { box-shadow: 0 0 14px rgba(16,185,129,.45); }
+  .clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 8px; }
+  .toast-in { animation: cardIn .2s ease-out; }
+  input, textarea, select { color-scheme: dark; }
+</style>
+</head>
+<body class="font-sans antialiased min-h-screen">
+
+<!-- Top navigation -->
+<header class="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090D16]/80 backdrop-blur-xl">
+  <div class="max-w-[1900px] mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center gap-3 justify-between">
+    <div class="flex items-center gap-3">
+      <div class="h-9 w-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 grid place-items-center shadow-lg shadow-indigo-500/30">
+        <i data-lucide="radar" class="h-5 w-5 text-white"></i>
+      </div>
+      <div>
+        <div class="font-semibold tracking-tight leading-tight">ScoutAI <span class="text-slate-500 font-normal">//</span> <span class="text-slate-300 font-medium">Opportunity Intelligence</span></div>
+        <div class="flex items-center gap-1.5 text-[11px] font-mono text-emerald-400">
+          <span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>
+          <span id="statusText">MTProto + AI Active</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="flex rounded-xl border border-slate-800 bg-slate-900/70 p-1 text-sm" id="viewSwitch">
+      <button data-view="kanban" class="view-btn px-3 py-1.5 rounded-lg transition">🗂️ Board</button>
+      <button data-view="table" class="view-btn px-3 py-1.5 rounded-lg transition">📋 Table / List View</button>
+      <button data-view="channels" class="view-btn px-3 py-1.5 rounded-lg transition">📡 Channels &amp; AI Profile</button>
+    </nav>
+
+    <div class="flex items-center gap-2">
+      <button id="scanBtn" class="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/70 hover:border-indigo-500/50 hover:bg-slate-800 px-3 py-2 text-sm font-medium transition">
+        <i data-lucide="refresh-cw" class="h-4 w-4"></i> Scan Channels Now
+      </button>
+      <button id="newBtn" class="inline-flex items-center gap-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 px-3 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 transition">
+        <i data-lucide="plus" class="h-4 w-4"></i> New Opportunity
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-[1900px] mx-auto px-4 sm:px-6 py-6 space-y-5">
+
+  <!-- KPI ribbon -->
+  <section id="kpis" class="grid grid-cols-2 lg:grid-cols-5 gap-3"></section>
+
+  <!-- Search & filters (hidden on the channels view) -->
+  <section id="filters" class="glass rounded-2xl p-3 flex flex-wrap items-center gap-3">
+    <div class="relative flex-1 min-w-[220px]">
+      <i data-lucide="search" class="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"></i>
+      <input id="search" type="search" placeholder="Search title, category, channel…   ( / )"
+             class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none pl-9 pr-3 py-2 text-sm placeholder-slate-500">
+    </div>
+    <div class="flex rounded-lg border border-slate-800 bg-slate-950/60 p-0.5 text-xs font-medium" id="scoreSwitch">
+      <button data-score="all" class="score-btn px-3 py-1.5 rounded-md transition">All</button>
+      <button data-score="high" class="score-btn px-3 py-1.5 rounded-md transition">8+ High Signal</button>
+      <button data-score="digest" class="score-btn px-3 py-1.5 rounded-md transition">5-7 Digest</button>
+    </div>
+    <label id="dismissedToggle" class="hidden items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+      <input id="showDismissed" type="checkbox" class="accent-indigo-500"> Show dismissed
+    </label>
+    <div id="catChips" class="flex flex-wrap gap-1.5 w-full"></div>
+  </section>
+
+  <!-- View 1: Kanban -->
+  <section id="view-kanban" class="space-y-4"></section>
+
+  <!-- View 2: Table -->
+  <section id="view-table" class="hidden glass rounded-2xl overflow-x-auto"></section>
+
+  <!-- View 3: Channels & profile -->
+  <section id="view-channels" class="hidden grid gap-5 lg:grid-cols-2 items-start">
+    <div class="glass rounded-2xl p-5 space-y-4">
+      <div>
+        <h2 class="font-semibold flex items-center gap-2"><i data-lucide="radio-tower" class="h-4 w-4 text-indigo-400"></i> Monitored Channels</h2>
+        <p class="text-sm text-slate-400 mt-1">Public channels only. New ones are joined and scanned right away.</p>
+      </div>
+      <textarea id="channelInput" rows="3" placeholder="Paste one or multiple channels (@edux, @grantlar, https://t.me/...)"
+                class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none p-3 text-sm font-mono placeholder-slate-600"></textarea>
+      <button id="addChannelsBtn" class="rounded-lg bg-indigo-500 hover:bg-indigo-400 px-4 py-2 text-sm font-semibold text-white transition">Add Channels</button>
+      <div id="channelChips" class="flex flex-wrap gap-2 pt-1"></div>
+    </div>
+    <div class="glass rounded-2xl p-5 space-y-4">
+      <div>
+        <h2 class="font-semibold flex items-center gap-2"><i data-lucide="brain-circuit" class="h-4 w-4 text-indigo-400"></i> AI Filtering Profile</h2>
+        <p class="text-sm text-slate-400 mt-1">The AI scores every post against this. Edit your background, stats, location rules and targets.</p>
+      </div>
+      <textarea id="profileInput" rows="12"
+                class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none p-3 text-sm leading-relaxed"></textarea>
+      <button id="saveProfileBtn" class="rounded-lg bg-indigo-500 hover:bg-indigo-400 px-4 py-2 text-sm font-semibold text-white transition">Save AI Profile</button>
+    </div>
+  </section>
+</main>
+
+<!-- New opportunity modal -->
+<div id="modal" class="hidden fixed inset-0 z-40 grid place-items-center p-4 bg-black/60 backdrop-blur-sm">
+  <form id="newForm" class="glass rounded-2xl w-full max-w-lg p-5 space-y-3 shadow-2xl">
+    <div class="flex items-center justify-between">
+      <h3 class="font-semibold text-lg">New Opportunity</h3>
+      <button type="button" id="modalClose" class="text-slate-500 hover:text-slate-200"><i data-lucide="x" class="h-5 w-5"></i></button>
+    </div>
+    <input name="title" required maxlength="300" placeholder="Title *" class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm">
+    <div class="grid grid-cols-2 gap-3">
+      <input name="category" placeholder="Category (e.g. Scholarship)" class="rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm">
+      <input name="deadline" placeholder="Deadline (e.g. Nov 15, 2026)" class="rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm">
+      <input name="score" type="number" min="0" max="10" placeholder="Score 0-10" class="rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm">
+      <select name="status" class="rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm">
+        <option value="UNTRACKED">Inbox / New</option><option value="PLANNED">Planned</option>
+        <option value="WORKING">Working On</option><option value="FINISHED">Finished</option>
+      </select>
+    </div>
+    <input name="post_link" type="url" placeholder="Link (optional, https://…)" class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm">
+    <textarea name="summary" rows="3" placeholder="Notes / summary (optional)" class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm"></textarea>
+    <div class="flex justify-end gap-2 pt-1">
+      <button type="button" id="modalCancel" class="rounded-lg border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 transition">Cancel</button>
+      <button type="submit" class="rounded-lg bg-indigo-500 hover:bg-indigo-400 px-4 py-2 text-sm font-semibold text-white transition">Add Opportunity</button>
+    </div>
+  </form>
+</div>
+
+<div id="toasts" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end"></div>
+
+<script>
+const COLUMNS = [
+  { key: 'UNTRACKED', title: 'Inbox / New', icon: 'inbox', tint: 'text-slate-300' },
+  { key: 'PLANNED',   title: '📌 Planned',  icon: 'pin', tint: 'text-sky-300' },
+  { key: 'WORKING',   title: '🛠️ Working On', icon: 'hammer', tint: 'text-amber-300' },
+  { key: 'FINISHED',  title: '✅ Finished', icon: 'check-circle-2', tint: 'text-emerald-300' },
+];
+const STATUS_LABEL = { UNTRACKED: 'Inbox / New', PLANNED: 'Planned', WORKING: 'Working On', FINISHED: 'Finished', DISMISSED: 'Dismissed' };
+const TOGGLE_STATUSES = ['PLANNED', 'WORKING', 'FINISHED'];
+const POLL_MS = 8000;
+
+const state = {
+  opps: [], stats: {}, channels: [], view: 'kanban', search: '', score: 'all', cat: null,
+  showDismissed: false, sort: { key: 'created_at', dir: 'desc' }, editing: null,
+  hash: '', busy: 0, known: null, profileLoaded: false, expanded: new Set(),
+  tab: pref('tab', 'UNTRACKED'), kSort: pref('ksort', 'deadline'),
+};
+function pref(key, fallback) { try { return localStorage.getItem('scoutai.' + key) || fallback; } catch { return fallback; } }
+function savePref(key, value) { try { localStorage.setItem('scoutai.' + key, value); } catch {} }
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const find = (id) => state.opps.find((o) => o.id === id);
+const icons = () => window.lucide && lucide.createIcons();
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const j = await res.json(); msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail); } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+/* ---------- toasts ---------- */
+function toast(msg, kind = 'ok', action) {
+  const colors = { ok: 'border-emerald-500/40', error: 'border-rose-500/50', info: 'border-indigo-500/40' };
+  const el = document.createElement('div');
+  el.className = `toast-in glass ${colors[kind] || colors.ok} rounded-xl px-4 py-2.5 text-sm shadow-xl flex items-center gap-3 max-w-sm`;
+  el.innerHTML = `<span>${esc(msg)}</span>`;
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'text-indigo-300 hover:text-indigo-200 font-semibold';
+    b.textContent = action.label;
+    b.onclick = () => { action.fn(); el.remove(); };
+    el.appendChild(b);
+  }
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), action ? 7000 : 4000);
+}
+
+/* ---------- deadline / score helpers ---------- */
+function daysLeft(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return null;
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  return Math.round((d - t) / 86400000);
+}
+function deadlineTone(n) {
+  if (n === null) return 'border-slate-700 text-slate-300 bg-slate-800/60';
+  if (n < 0) return 'border-slate-600 text-slate-400 bg-slate-800/60';
+  if (n <= 1) return 'border-rose-500/50 text-rose-300 bg-rose-500/10';
+  if (n <= 3) return 'border-orange-500/50 text-orange-300 bg-orange-500/10';
+  if (n <= 7) return 'border-amber-500/50 text-amber-300 bg-amber-500/10';
+  return 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10';
+}
+function countdown(n) {
+  if (n === null) return '';
+  if (n < 0) return 'expired';
+  if (n === 0) return 'today';
+  if (n === 1) return 'tomorrow';
+  return `${n}d left`;
+}
+const isManual = (o) => o.channel_source === 'manual';
+const isPlaceholder = (o) => !o.deadline || o.deadline.startsWith('⚠️');
+const isLink = (u) => /^https?:\/\//.test(u || '');
+
+function scoreBadge(o) {
+  if (isManual(o) && !o.score) return `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-700/60 text-slate-300 border border-slate-600">MANUAL</span>`;
+  const s = o.score || 0;
+  const cls = s >= 8 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/50 glow-emerald'
+            : s >= 5 ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+            : 'bg-slate-700/50 text-slate-300 border-slate-600';
+  return `<span class="px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold border ${cls}">${s}/10</span>`;
+}
+
+function deadlinePill(o) {
+  const n = daysLeft(o.deadline_date);
+  const tone = isPlaceholder(o) ? 'border-dashed border-slate-600 text-slate-400 bg-slate-800/40' : deadlineTone(n);
+  const text = isPlaceholder(o) ? 'Set deadline' : esc(o.deadline);
+  const extra = n !== null && !isPlaceholder(o) ? `<span class="opacity-70">· ${countdown(n)}</span>` : '';
+  return `<span data-deadline-wrap="${o.id}">
+    <button data-act="dl-edit" data-id="${o.id}" title="Click to edit deadline"
+      class="inline-flex items-center gap-1.5 max-w-full rounded-full border px-2.5 py-1 text-xs font-medium hover:brightness-125 transition ${tone}">
+      <span>📅</span><span class="truncate">${text}</span>${extra}
+    </button></span>`;
+}
+
+/* ---------- filtering ---------- */
+function visible(includeDismissed = state.view === 'table' && state.showDismissed) {
+  const q = state.search.trim().toLowerCase();
+  return state.opps.filter((o) => {
+    if (o.status === 'DISMISSED' && !includeDismissed) return false;
+    if (state.score === 'high' && !(o.score >= 8)) return false;
+    if (state.score === 'digest' && !(o.score >= 5 && o.score <= 7)) return false;
+    if (state.cat && o.category !== state.cat) return false;
+    if (q && !`${o.title} ${o.category} ${o.channel_source} ${o.summary || ''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+/* ---------- rendering ---------- */
+function renderKpis() {
+  const s = state.stats || {};
+  const cards = [
+    ['Inbox / New', s.untracked, `${s.high_urgency ?? 0} high urgency`, 'inbox', 'text-indigo-300'],
+    ['Planned', s.planned, 'on the radar', 'pin', 'text-sky-300'],
+    ['Working On', s.working, 'in progress', 'hammer', 'text-amber-300'],
+    ['Completed', s.finished, `of ${s.total_scanned ?? 0} tracked`, 'check-circle-2', 'text-emerald-300'],
+    ['Monitored Channels', s.active_channels, 'live via MTProto', 'radio-tower', 'text-violet-300'],
+  ];
+  $('kpis').innerHTML = cards.map(([label, val, sub, icon, tone]) => `
+    <div class="glass glass-hover rounded-2xl p-4">
+      <div class="flex items-center justify-between text-xs text-slate-400 font-medium">${label}<i data-lucide="${icon}" class="h-4 w-4 ${tone}"></i></div>
+      <div class="text-3xl font-semibold tracking-tight mt-2 font-mono">${val ?? 0}</div>
+      <div class="text-xs text-slate-500 mt-1">${sub}</div>
+    </div>`).join('');
+}
+
+function renderChips() {
+  const counts = {};
+  state.opps.filter((o) => o.status !== 'DISMISSED').forEach((o) => { counts[o.category] = (counts[o.category] || 0) + 1; });
+  const cats = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  if (state.cat && !counts[state.cat]) state.cat = null;
+  $('catChips').innerHTML = cats.map(([c, n]) => {
+    const on = state.cat === c;
+    return `<button data-cat="${esc(c)}" class="chip rounded-full border px-2.5 py-1 text-xs transition ${on ? 'bg-indigo-500/20 border-indigo-400/60 text-indigo-200' : 'border-slate-700 text-slate-400 hover:border-slate-500'}">${esc(c)} <span class="opacity-60">${n}</span></button>`;
+  }).join('');
+}
+
+function cardHTML(o) {
+  const open = state.expanded.has(o.id);
+  const status = o.status;
+  const btn = (act, label, key) => {
+    const on = status === key;
+    return `<button data-act="status" data-id="${o.id}" data-status="${key}" class="rounded-md border px-2 py-1 text-xs font-medium transition ${on ? 'bg-indigo-500/25 border-indigo-400/60 text-indigo-100' : 'border-slate-700 text-slate-400 hover:text-slate-100 hover:border-slate-500'}">${label}</button>`;
+  };
+  const channel = isManual(o) ? '<span class="text-xs text-slate-500">added manually</span>'
+    : `<a href="https://t.me/${esc(o.channel_source)}" target="_blank" rel="noopener" class="text-xs text-indigo-300 hover:text-indigo-200 font-mono truncate">@${esc(o.channel_source)}</a>`;
+  const why = o.why_it_matches ? `
+    <div class="rounded-lg bg-indigo-500/[.07] border border-indigo-500/20 p-2.5 text-xs leading-relaxed">
+      <div class="text-[10px] uppercase tracking-wider text-indigo-300 font-semibold mb-1">✨ Why it matches you</div>
+      <div class="text-slate-300 ${open ? '' : 'clamp-3'}">${esc(o.why_it_matches)}</div>
+    </div>` : '';
+  const summary = o.summary ? `<p class="text-[13px] text-slate-400 leading-relaxed ${open ? '' : 'clamp-3'}">${esc(o.summary)}</p>` : '';
+  const expandable = (o.summary || '').length > 130 || (o.why_it_matches || '').length > 150;
+  return `
+  <article class="card-in glass glass-hover rounded-2xl p-3.5 space-y-2.5" data-card="${o.id}">
+    <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center gap-1.5 min-w-0">${scoreBadge(o)}
+        <span class="px-2 py-0.5 rounded-md text-[11px] border border-slate-700 text-slate-300 truncate">${esc(o.category)}</span></div>
+      ${channel}
+    </div>
+    <h3 class="font-semibold leading-snug text-[15px]">${esc(o.title)}</h3>
+    ${summary}${why}
+    ${expandable ? `<button data-act="expand" data-id="${o.id}" class="text-xs text-slate-500 hover:text-slate-300">${open ? 'Show less' : 'Show more'}</button>` : ''}
+    <div>${deadlinePill(o)}</div>
+    <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-800/80">
+      ${btn('status', '📌 Plan', 'PLANNED')}${btn('status', '🛠️ Work', 'WORKING')}${btn('status', '✅ Done', 'FINISHED')}
+      ${status === 'DISMISSED'
+        ? `<button data-act="status" data-id="${o.id}" data-status="UNTRACKED" class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-indigo-500/60 transition">↩️ Restore</button>`
+        : `<button data-act="dismiss" data-id="${o.id}" title="Dismiss" class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-rose-300 hover:border-rose-500/50 transition">🗑️</button>`}
+      ${isLink(o.post_link) ? `<a href="${esc(o.post_link)}" target="_blank" rel="noopener" class="ml-auto rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-indigo-500/60 hover:text-indigo-200 transition">🔗 Original Post ↗</a>` : ''}
+    </div>
+  </article>`;
+}
+
+const TABS = [...COLUMNS, { key: 'DISMISSED', title: '🗑️ Dismissed', icon: 'archive', tint: 'text-slate-400' }];
+const SORTS = { deadline: 'Deadline: soonest first', score: 'Score: highest first', newest: 'Newest first' };
+const EMPTY_TEXT = {
+  UNTRACKED: 'Inbox zero 🎉 — new finds from your channels land here.',
+  PLANNED: 'Nothing planned yet. Tap 📌 Plan on an inbox card to line it up.',
+  WORKING: 'Nothing in progress. Tap 🛠️ Work when you start on something.',
+  FINISHED: 'No finished opportunities yet.',
+  DISMISSED: 'Nothing dismissed.',
+};
+
+// upcoming (soonest first) -> no date -> expired last
+function deadlineKey(o) {
+  const n = daysLeft(o.deadline_date);
+  return n === null ? 99999 : n < 0 ? 100000 - n : n;
+}
+function sortItems(list) {
+  const cmp = {
+    deadline: (a, b) => deadlineKey(a) - deadlineKey(b) || (b.score || 0) - (a.score || 0),
+    score: (a, b) => (b.score || 0) - (a.score || 0) || deadlineKey(a) - deadlineKey(b),
+    newest: (a, b) => b.id - a.id,
+  }[state.kSort];
+  return list.slice().sort(cmp);
+}
+function groupOf(o) {
+  const n = daysLeft(o.deadline_date);
+  if (n === null) return ['4', '⚪ No deadline'];
+  if (n < 0) return ['5', '⚫ Expired'];
+  if (n <= 3) return ['1', '🔴 Due within 3 days'];
+  if (n <= 14) return ['2', '🟡 Within 2 weeks'];
+  return ['3', '🟢 Later'];
+}
+
+function renderKanban() {
+  const items = visible(true);
+  const counts = Object.fromEntries(TABS.map((t) => [t.key, items.filter((o) => o.status === t.key).length]));
+  const tabs = TABS.map((t) => {
+    const on = state.tab === t.key;
+    return `<button data-tab="${t.key}" class="inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-medium transition ${on ? 'bg-indigo-500/20 border-indigo-400/50 text-indigo-100' : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:text-slate-100 hover:border-slate-600'}">
+      <i data-lucide="${t.icon}" class="h-4 w-4 ${on ? '' : t.tint}"></i>${t.title}
+      <span class="font-mono text-xs rounded-full px-1.5 py-0.5 ${on ? 'bg-indigo-400/25' : 'bg-slate-800'}">${counts[t.key]}</span></button>`;
+  }).join('');
+  const sortSel = `<select data-act="ksort" class="rounded-lg bg-slate-900/70 border border-slate-800 px-2.5 py-2 text-xs text-slate-300 focus:outline-none focus:border-indigo-500/60">
+    ${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${state.kSort === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
+
+  const list = sortItems(items.filter((o) => o.status === state.tab));
+  let body = '';
+  if (!list.length) {
+    body = `<div class="col-span-full rounded-2xl border border-dashed border-slate-800 text-center text-sm text-slate-500 py-16">${EMPTY_TEXT[state.tab]}</div>`;
+  } else if (state.kSort === 'deadline' && state.tab !== 'FINISHED' && state.tab !== 'DISMISSED') {
+    const groups = {};
+    list.forEach((o) => { const [k, label] = groupOf(o); (groups[k] ||= { label, items: [] }).items.push(o); });
+    body = Object.keys(groups).sort().map((k) => `
+      <div class="col-span-full flex items-center gap-3 pt-2 first:pt-0">
+        <span class="text-sm font-semibold text-slate-300">${groups[k].label}</span>
+        <span class="text-xs font-mono text-slate-500 bg-slate-800/70 rounded-full px-2 py-0.5">${groups[k].items.length}</span>
+        <div class="h-px flex-1 bg-slate-800"></div>
+      </div>${groups[k].items.map(cardHTML).join('')}`).join('');
+  } else {
+    body = list.map(cardHTML).join('');
+  }
+
+  $('view-kanban').innerHTML = `
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap gap-2">${tabs}</div>${sortSel}
+    </div>
+    <div class="grid gap-3.5 grid-cols-[repeat(auto-fill,minmax(310px,1fr))] items-start">${body}</div>`;
+}
+
+const TABLE_COLS = [
+  ['score', 'Score'], ['title', 'Title'], ['category', 'Category'], ['channel_source', 'Channel'],
+  ['deadline_date', 'Deadline'], ['status', 'Status'], ['created_at', 'Added'],
+];
+function renderTable() {
+  const { key, dir } = state.sort;
+  const rows = visible().slice().sort((a, b) => {
+    let x = a[key], y = b[key];
+    if (key === 'deadline_date') { x = x || '9999'; y = y || '9999'; }
+    if (typeof x === 'string') { x = x.toLowerCase(); y = String(y ?? '').toLowerCase(); }
+    return (x > y ? 1 : x < y ? -1 : 0) * (dir === 'asc' ? 1 : -1);
+  });
+  const head = TABLE_COLS.map(([k, label]) => {
+    const arrow = state.sort.key === k ? (state.sort.dir === 'asc' ? ' ↑' : ' ↓') : '';
+    return `<th data-sort="${k}" class="px-4 py-3 text-left font-medium cursor-pointer hover:text-slate-200 select-none whitespace-nowrap">${label}${arrow}</th>`;
+  }).join('') + '<th class="px-4 py-3 text-left font-medium">Post</th><th></th>';
+  const body = rows.map((o) => `
+    <tr class="border-t border-slate-800/80 hover:bg-slate-800/30 transition">
+      <td class="px-4 py-3">${scoreBadge(o)}</td>
+      <td class="px-4 py-3 font-medium max-w-[360px]"><div class="truncate" title="${esc(o.title)}">${esc(o.title)}</div></td>
+      <td class="px-4 py-3 text-slate-400 whitespace-nowrap">${esc(o.category)}</td>
+      <td class="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">${isManual(o) ? 'manual' : '@' + esc(o.channel_source)}</td>
+      <td class="px-4 py-3">${deadlinePill(o)}</td>
+      <td class="px-4 py-3">
+        <select data-act="status-select" data-id="${o.id}" class="rounded-md bg-slate-950/70 border border-slate-700 px-2 py-1 text-xs focus:outline-none focus:border-indigo-500/60">
+          ${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select></td>
+      <td class="px-4 py-3 text-xs text-slate-500 font-mono whitespace-nowrap">${esc((o.created_at || '').slice(0, 10))}</td>
+      <td class="px-4 py-3">${isLink(o.post_link) ? `<a href="${esc(o.post_link)}" target="_blank" rel="noopener" class="text-indigo-300 hover:text-indigo-200 text-xs">Open ↗</a>` : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-2 py-3"><button data-act="delete" data-id="${o.id}" title="Delete permanently" class="text-slate-600 hover:text-rose-400"><i data-lucide="trash-2" class="h-4 w-4"></i></button></td>
+    </tr>`).join('');
+  $('view-table').innerHTML = `
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-400 uppercase tracking-wider"><tr>${head}</tr></thead>
+      <tbody>${body || '<tr><td colspan="9" class="px-4 py-10 text-center text-slate-600">No opportunities match your filters</td></tr>'}</tbody>
+    </table>`;
+}
+
+function renderChannels() {
+  $('channelChips').innerHTML = state.channels.map((c) => `
+    <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/70 pl-3 pr-1.5 py-1 text-xs font-mono">
+      <a href="https://t.me/${esc(c)}" target="_blank" rel="noopener" class="hover:text-indigo-300">@${esc(c)}</a>
+      <button data-act="rm-channel" data-name="${esc(c)}" class="grid place-items-center h-5 w-5 rounded-full hover:bg-rose-500/20 hover:text-rose-300 text-slate-500" title="Remove">✕</button>
+    </span>`).join('') || '<span class="text-sm text-slate-500">No channels yet.</span>';
+}
+
+function applyView() {
+  document.querySelectorAll('.view-btn').forEach((b) => {
+    const on = b.dataset.view === state.view;
+    b.className = `view-btn px-3 py-1.5 rounded-lg transition ${on ? 'bg-indigo-500/20 text-indigo-100 border border-indigo-400/40' : 'text-slate-400 hover:text-slate-200 border border-transparent'}`;
+  });
+  document.querySelectorAll('.score-btn').forEach((b) => {
+    const on = b.dataset.score === state.score;
+    b.className = `score-btn px-3 py-1.5 rounded-md transition ${on ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`;
+  });
+  $('view-kanban').classList.toggle('hidden', state.view !== 'kanban');
+  $('view-table').classList.toggle('hidden', state.view !== 'table');
+  const ch = state.view === 'channels';
+  $('view-channels').classList.toggle('hidden', !ch);
+  $('view-channels').classList.toggle('grid', ch);
+  $('filters').classList.toggle('hidden', ch);
+  $('dismissedToggle').classList.toggle('hidden', state.view !== 'table');
+  $('dismissedToggle').classList.toggle('flex', state.view === 'table');
+}
+
+function render() {
+  applyView();
+  renderKpis();
+  renderChips();
+  if (state.view === 'kanban') renderKanban();
+  else if (state.view === 'table') renderTable();
+  else renderChannels();
+  icons();
+}
+
+/* ---------- data ---------- */
+async function refresh() {
+  if (state.busy) return;
+  const data = await api('/api/opportunities');
+  if (state.busy) return;
+  const ids = new Set(data.opportunities.map((o) => o.id));
+  if (state.known) {
+    const fresh = [...ids].filter((id) => !state.known.has(id));
+    if (fresh.length) toast(`${fresh.length} new opportunit${fresh.length === 1 ? 'y' : 'ies'} from Telegram`, 'info');
+  }
+  state.known = ids;
+  const hash = JSON.stringify(data);
+  if (hash === state.hash) return;
+  if (state.editing !== null) return;           // don't wipe an inline editor mid-typing
+  state.hash = hash;
+  state.opps = data.opportunities;
+  state.stats = data.stats;
+  render();
+}
+
+async function loadChannels() {
+  state.channels = (await api('/api/channels')).channels;
+  if (state.view === 'channels') renderChannels();
+}
+
+async function mutate(fn) {
+  state.busy++;
+  try { return await fn(); } finally { state.busy--; }
+}
+
+async function setStatus(id, status, silent) {
+  const o = find(id); if (!o) return;
+  const prev = o.status;
+  if (status === prev && TOGGLE_STATUSES.includes(status)) status = 'UNTRACKED';
+  o.status = status; render();
+  try {
+    await mutate(() => api(`/api/opportunities/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }));
+    state.hash = '';
+    await refresh();
+    if (!silent && state.view === 'kanban' && status !== prev) {
+      // the card just left this tab, so say where it went and offer a way back
+      const where = status === 'DISMISSED' ? 'Dismissed' : `Moved to ${STATUS_LABEL[status]}`;
+      toast(where, 'info', { label: 'Undo', fn: () => setStatus(id, prev, true) });
+    } else if (status === 'DISMISSED' && !silent) {
+      toast('Dismissed', 'info', { label: 'Undo', fn: () => setStatus(id, prev, true) });
+    }
+  } catch (e) { o.status = prev; render(); toast(e.message, 'error'); }
+}
+
+function startDeadlineEdit(id, trigger) {
+  const o = find(id); if (!o) return;
+  const wrap = trigger.closest('[data-deadline-wrap]');
+  state.editing = id;
+  wrap.innerHTML = `
+    <span class="inline-flex items-center gap-1">
+      <input id="dl-input" value="${esc(isPlaceholder(o) ? '' : o.deadline)}" placeholder="e.g. Nov 15, 2026"
+        class="w-44 rounded-lg bg-slate-950 border border-indigo-500/60 px-2.5 py-1 text-xs focus:outline-none">
+      <button data-act="dl-save" data-id="${id}" class="rounded-md bg-indigo-500 hover:bg-indigo-400 px-2 py-1 text-xs font-semibold text-white">Save</button>
+      <button data-act="dl-cancel" class="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-white">✕</button>
+    </span>`;
+  const input = $('dl-input');
+  input.focus(); input.select();
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') saveDeadline(id);
+    if (e.key === 'Escape') cancelDeadlineEdit();
+  };
+}
+function cancelDeadlineEdit() { state.editing = null; state.hash = ''; render(); }
+async function saveDeadline(id) {
+  const value = ($('dl-input')?.value || '').trim();
+  try {
+    const updated = await mutate(() => api(`/api/opportunities/${id}/deadline`, { method: 'PATCH', body: JSON.stringify({ deadline: value }) }));
+    Object.assign(find(id), updated);
+    state.editing = null; state.hash = '';
+    render(); toast('Deadline saved');
+    refresh();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteOpp(id) {
+  const o = find(id); if (!o) return;
+  if (!confirm(`Delete "${o.title}" permanently?`)) return;
+  try {
+    await mutate(() => api(`/api/opportunities/${id}`, { method: 'DELETE' }));
+    state.opps = state.opps.filter((x) => x.id !== id);
+    state.hash = ''; render(); toast('Deleted'); refresh();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function scanNow() {
+  const btn = $('scanBtn');
+  if (btn.classList.contains('spinning')) return;
+  btn.classList.add('spinning');
+  toast('Scanning channels…', 'info');
+  try {
+    const r = await api('/api/scan', { method: 'POST' });
+    if (r.running) toast('Scan is still running in the background — results appear automatically', 'info');
+    else toast(`Scan complete: ${r.evaluated} new post${r.evaluated === 1 ? '' : 's'} evaluated`);
+    state.hash = ''; await refresh();
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.classList.remove('spinning'); }
+}
+
+async function addChannels() {
+  const input = $('channelInput');
+  const text = input.value.trim();
+  if (!text) return;
+  const btn = $('addChannelsBtn'); btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    const r = await api('/api/channels', { method: 'POST', body: JSON.stringify({ channels: text }) });
+    if (r.added.length) toast(`Added ${r.added.length} channel${r.added.length === 1 ? '' : 's'}: ${r.added.map((c) => '@' + c).join(', ')} — scanning…`);
+    if (r.already.length) toast(`Already monitored: ${r.already.map((c) => '@' + c).join(', ')}`, 'info');
+    if (r.failed.length) toast(`Couldn't add: ${r.failed.join(', ')}`, 'error');
+    if (!r.failed.length) input.value = '';
+    await loadChannels(); state.hash = ''; await refresh();
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Add Channels'; }
+}
+
+async function removeChannel(name) {
+  try {
+    await api(`/api/channels/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    toast(`Removed @${name}`, 'info');
+    await loadChannels(); state.hash = ''; await refresh();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function loadProfile() {
+  const p = await api('/api/profile');
+  $('profileInput').value = p.profile;
+  state.profileLoaded = true;
+}
+async function saveProfile() {
+  try {
+    await api('/api/profile', { method: 'PUT', body: JSON.stringify({ profile: $('profileInput').value }) });
+    toast('AI profile saved — applies to all new posts');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function setView(v) {
+  state.view = v;
+  state.editing = null;
+  render();
+  if (v === 'channels') { loadChannels().catch(() => {}); if (!state.profileLoaded) loadProfile().catch((e) => toast(e.message, 'error')); }
+}
+
+/* ---------- modal ---------- */
+const modalOpen = () => !$('modal').classList.contains('hidden');
+function openModal() { $('modal').classList.remove('hidden'); $('newForm').title.focus(); }
+function closeModal() { $('modal').classList.add('hidden'); $('newForm').reset(); }
+
+/* ---------- events ---------- */
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-act],[data-view],[data-score],[data-cat],[data-sort],[data-tab]');
+  if (!t) return;
+  const id = Number(t.dataset.id);
+  if (t.dataset.view) return setView(t.dataset.view);
+  if (t.dataset.tab) { state.tab = t.dataset.tab; savePref('tab', state.tab); return render(); }
+  if (t.dataset.score) { state.score = t.dataset.score; return render(); }
+  if (t.dataset.cat) { state.cat = state.cat === t.dataset.cat ? null : t.dataset.cat; return render(); }
+  if (t.dataset.sort) {
+    const k = t.dataset.sort;
+    state.sort = { key: k, dir: state.sort.key === k && state.sort.dir === 'desc' ? 'asc' : 'desc' };
+    return render();
+  }
+  switch (t.dataset.act) {
+    case 'status': return setStatus(id, t.dataset.status);
+    case 'dismiss': return setStatus(id, 'DISMISSED');
+    case 'dl-edit': return startDeadlineEdit(id, t);
+    case 'dl-save': return saveDeadline(id);
+    case 'dl-cancel': return cancelDeadlineEdit();
+    case 'delete': return deleteOpp(id);
+    case 'rm-channel': return removeChannel(t.dataset.name);
+    case 'expand': state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id); return render();
+  }
+});
+document.addEventListener('change', (e) => {
+  if (e.target.dataset.act === 'status-select') setStatus(Number(e.target.dataset.id), e.target.value);
+  if (e.target.dataset.act === 'ksort') { state.kSort = e.target.value; savePref('ksort', state.kSort); render(); }
+});
+$('search').addEventListener('input', (e) => { state.search = e.target.value; render(); });
+$('showDismissed').addEventListener('change', (e) => { state.showDismissed = e.target.checked; render(); });
+$('scanBtn').addEventListener('click', scanNow);
+$('newBtn').addEventListener('click', openModal);
+$('modalClose').addEventListener('click', closeModal);
+$('modalCancel').addEventListener('click', closeModal);
+$('modal').addEventListener('click', (e) => { if (e.target === $('modal')) closeModal(); });
+$('addChannelsBtn').addEventListener('click', addChannels);
+$('saveProfileBtn').addEventListener('click', saveProfile);
+$('newForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = {
+    title: f.get('title').trim(), category: f.get('category').trim() || 'Manual',
+    deadline: f.get('deadline').trim(), score: Number(f.get('score') || 0),
+    post_link: f.get('post_link').trim(), summary: f.get('summary').trim(), status: f.get('status'),
+  };
+  try {
+    await api('/api/opportunities', { method: 'POST', body: JSON.stringify(body) });
+    closeModal(); toast('Opportunity added'); state.hash = ''; await refresh();
+  } catch (err) { toast(err.message, 'error'); }
+});
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+  if (e.key === 'Escape' && modalOpen()) closeModal();
+  if (typing) return;
+  if (e.key === '/') { e.preventDefault(); $('search').focus(); }
+  if (e.key === 'n') { e.preventDefault(); openModal(); }
+  const tab = TABS[Number(e.key) - 1];  // 1-5 jump between board tabs
+  if (tab && state.view === 'kanban') { state.tab = tab.key; savePref('tab', tab.key); render(); }
+});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh().catch(() => {}); });
+
+/* ---------- boot ---------- */
+(async function boot() {
+  applyView(); icons();
+  try { await refresh(); } catch (e) { toast('Could not load data: ' + e.message, 'error'); }
+  setInterval(() => refresh().then(() => { $('statusText').textContent = 'MTProto + AI Active'; })
+    .catch(() => { $('statusText').textContent = 'Reconnecting…'; }), POLL_MS);
+})();
+</script>
+</body>
+</html>
