@@ -31,7 +31,10 @@ def _load():
     )}
     missing = [name for name, value in values.items() if not value]
     if missing:
-        sys.exit(f"Missing or placeholder values in .env: {', '.join(missing)}")
+        sys.exit(
+            f"Missing or placeholder values in .env: {', '.join(missing)}\n"
+            "Run setup.py (or just run.bat) to fill them in step by step."
+        )
     for name in ("TG_API_ID", "ADMIN_USER_ID"):
         if not values[name].lstrip("-").isdigit():
             sys.exit(f"{name} in .env must be a number")
