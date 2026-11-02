@@ -37,34 +37,69 @@ def days_until(iso: str | None) -> int | None:
         return None
 
 
-_DATE_FORMATS = ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y")
-_NO_YEAR_FORMATS = ("%b %d", "%B %d", "%d %b", "%d %B")
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_MONTH = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+_NUMERIC_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+_DOTTED_RE = re.compile(r"\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b")
+_DAY_MONTH_RE = re.compile(rf"\b(\d{{1,2}})\s*{_MONTH}\b(?:\s+(\d{{4}}))?")
+_MONTH_DAY_RE = re.compile(rf"\b{_MONTH}\s+(\d{{1,2}})\b(?!\s*:)(?:\s+(\d{{4}}))?")
+_MONTH_YEAR_RE = re.compile(rf"\b{_MONTH}\s+(\d{{4}})\b")
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _roll_forward(month: int, day: int, today: date) -> date | None:
+    candidate = _safe_date(today.year, month, day)
+    if candidate and candidate < today:
+        candidate = _safe_date(today.year + 1, month, day)
+    return candidate
 
 
 def parse_deadline_date(text: str) -> str | None:
-    """Best-effort conversion of free-text deadlines ('Nov 15, 2026', 'Dec 1, 23:59') to ISO."""
+    """Best-effort conversion of free-text deadlines to ISO. Finds the date anywhere in the text:
+    '15 November 2026', '30.10.2026', '2026-10-26 08:59 GMT+5', 'Nov 15, 2026', '14-15 Nov 2026',
+    'Dec 1, 23:59', 'October 2026' (month only -> last day of that month)."""
     s = text.lower()
-    s = re.sub(r"\d{1,2}:\d{2}\s*(?:am|pm)?", " ", s)
     s = re.sub(r"\b(\d{1,2})(?:st|nd|rd|th)\b", r"\1", s)
     s = re.sub(r"\bsept\b", "sep", s)
-    s = re.sub(r"[,\s]+", " ", s).strip(" .-")
     today = datetime.now().date()
-    if s == "today":
+    if re.fullmatch(r"\W*today\W*", s):
         return today.isoformat()
-    if s == "tomorrow":
+    if re.fullmatch(r"\W*tomorrow\W*", s):
         return (today + timedelta(days=1)).isoformat()
-    for fmt in _DATE_FORMATS:
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    for fmt in _NO_YEAR_FORMATS:
-        try:
-            parsed = datetime.strptime(f"{s} 2000", f"{fmt} %Y").date()
-        except ValueError:
-            continue
-        candidate = parsed.replace(year=today.year)
-        if candidate < today:
-            candidate = candidate.replace(year=today.year + 1)
-        return candidate.isoformat()
+
+    if m := _NUMERIC_RE.search(s):
+        found = _safe_date(int(m[1]), int(m[2]), int(m[3]))
+        if found:
+            return found.isoformat()
+    if m := _DOTTED_RE.search(s):
+        found = _safe_date(int(m[3]), int(m[2]), int(m[1]))
+        if found:
+            return found.isoformat()
+    if m := _DAY_MONTH_RE.search(s):
+        month, day, year = _MONTHS[m[2]], int(m[1]), m[3]
+        found = _safe_date(int(year), month, day) if year else _roll_forward(month, day, today)
+        if found:
+            return found.isoformat()
+    if m := _MONTH_DAY_RE.search(s):
+        month, day, year = _MONTHS[m[1]], int(m[2]), m[3]
+        found = _safe_date(int(year), month, day) if year else _roll_forward(month, day, today)
+        if found:
+            return found.isoformat()
+    if m := _MONTH_YEAR_RE.search(s):
+        month, year = _MONTHS[m[1]], int(m[2])
+        first_of_next = date(year + (month == 12), month % 12 + 1, 1)
+        return (first_of_next - timedelta(days=1)).isoformat()
+    if re.search(r"\btoday\b", s):
+        return today.isoformat()
+    if re.search(r"\btomorrow\b", s):
+        return (today + timedelta(days=1)).isoformat()
     return None

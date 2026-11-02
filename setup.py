@@ -234,9 +234,14 @@ def main() -> int:
         ai_key = ask_ai_key()
         step(5, 5, "Channels to watch")
         channels = ask_channels()
+        say()
+        say("Optional: open the dashboard on your phone (same Wi-Fi). Choose a dashboard password,")
+        say("or press Enter to keep the dashboard private to this computer.")
+        web_password = input("Dashboard password: ").strip()
         ENV_PATH.write_text(
             f"TG_API_ID={api_id}\nTG_API_HASH={api_hash}\nTG_BOT_TOKEN={token}\n"
-            f"ADMIN_USER_ID={user_id}\nAI_API_KEY={ai_key}\nINITIAL_CHANNELS={channels}\n",
+            f"ADMIN_USER_ID={user_id}\nAI_API_KEY={ai_key}\nINITIAL_CHANNELS={channels}\n"
+            f"WEB_PASSWORD={web_password}\n",
             encoding="utf-8",
         )
         say("  Settings saved to .env (this file is private; never share it).")

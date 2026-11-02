@@ -77,6 +77,19 @@ async def init_db() -> None:
             "OR TRIM(deadline) = '' OR LOWER(deadline) LIKE 'not specified%'",
             (NOT_SPECIFIED,),
         )
+        # Backfill ISO dates that the parser could not read in earlier versions
+        async with db.execute(
+            "SELECT id, deadline FROM seen_opportunities "
+            "WHERE (deadline_date IS NULL OR deadline_date = '') AND deadline != ?",
+            (NOT_SPECIFIED,),
+        ) as cur:
+            undated = await cur.fetchall()
+        for opp_id, text in undated:
+            parsed = parse_deadline_date(text or "")
+            if parsed:
+                await db.execute(
+                    "UPDATE seen_opportunities SET deadline_date = ? WHERE id = ?", (parsed, opp_id)
+                )
 
         async with db.execute("SELECT COUNT(*) FROM user_profile") as cur:
             (count,) = await cur.fetchone()

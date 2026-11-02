@@ -17,7 +17,7 @@ import web_api
 from ai_evaluator import evaluate_message, passes_prefilter
 from utils import days_until, parse_channels, parse_deadline_date
 from config import (ADMIN_USER_ID, API_HASH, API_ID, BASE_DIR, BOT_SESSION,
-                    BOT_TOKEN, USER_SESSION)
+                    BOT_TOKEN, USER_SESSION, WEB_PASSWORD)
 
 for _stream in (sys.stdout, sys.stderr):  # emoji in the banner/logs must not crash cp1252 consoles
     if _stream is not None and hasattr(_stream, "reconfigure"):
@@ -39,7 +39,7 @@ bot_client.parse_mode = None  # formatting is requested explicitly per message
 
 process_lock = asyncio.Lock()  # serialises AI calls so duplicate detection stays accurate
 
-WEB_HOST = "127.0.0.1"
+WEB_HOST = "0.0.0.0" if WEB_PASSWORD else "127.0.0.1"  # network access only when password-protected
 WEB_PORT = 8000
 AI_DELAY_SECONDS = 3.0
 DIGEST_MIN_SCORE = 5
@@ -383,9 +383,10 @@ async def process_message(channel: str, msg) -> bool:
     if score < DIGEST_MIN_SCORE:
         return True
 
-    days_left = days_until(ev.deadline_iso)
+    deadline_iso = ev.deadline_iso or parse_deadline_date(ev.deadline_or_date or "") or ""
+    days_left = days_until(deadline_iso)
     if days_left is not None and days_left < 0:
-        log.info("skip %s (deadline %s already passed)", link, ev.deadline_iso)
+        log.info("skip %s (deadline %s already passed)", link, deadline_iso)
         return True
 
     immediate = score >= IMMEDIATE_MIN_SCORE or (
@@ -396,7 +397,7 @@ async def process_message(channel: str, msg) -> bool:
         category=ev.category,
         channel_source=channel,
         deadline=ev.deadline_or_date,
-        deadline_date=ev.deadline_iso,
+        deadline_date=deadline_iso,
         score=score,
         urgency="IMMEDIATE" if immediate else "DIGEST",
         post_link=link,
@@ -806,6 +807,18 @@ async def digest_scheduler() -> None:
 
 # ---------- entry point ----------
 
+def _lan_ip() -> str:
+    """This computer's address on the local network (no traffic is sent)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))
+        return probe.getsockname()[0]
+    except OSError:
+        return "your-computer-ip"
+    finally:
+        probe.close()
+
+
 async def main() -> None:
     await db.init_db()
     await bot_client.start(bot_token=BOT_TOKEN)
@@ -835,6 +848,8 @@ async def main() -> None:
         finally:
             probe.close()
         banner = f"🌐 ScoutAI Web Dashboard is live at: http://localhost:{WEB_PORT}"
+        if WEB_PASSWORD:
+            banner += f"\n📱 On your phone (same Wi-Fi): http://{_lan_ip()}:{WEB_PORT}"
         log.info(banner)
         print(banner, flush=True)
         try:

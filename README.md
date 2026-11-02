@@ -115,7 +115,16 @@ While the bot is running, open **http://localhost:8000**. It has three views:
 - **Table:** every opportunity in one list.
 - **Channels & AI Profile:** add or remove channels, edit your profile, and trigger a rescan.
 
-The dashboard is only reachable from your own computer.
+By default the dashboard is only reachable from your own computer.
+
+#### Opening the dashboard on your phone
+
+1. Open the `.env` file in Notepad and set a password: `WEB_PASSWORD=choose-something-long`
+2. Restart ScoutAI. The black window now shows a second line, `On your phone (same Wi-Fi): http://192.168.x.x:8000`.
+3. Connect your phone to the **same Wi-Fi** as the computer and open that address in your phone's browser. Sign in with your password.
+4. The first time, Windows may ask whether to allow Python through the firewall. Allow it on **private networks** only.
+
+Tips: use "Add to Home Screen" in your browser to get an app-like icon. The computer must be on and running ScoutAI, and the address can change if your router gives the computer a new IP. To reach it away from home, install the free [Tailscale](https://tailscale.com) app on both devices and use the computer's Tailscale address instead. Don't expose the port to the internet directly: the connection is not encrypted.
 
 ### Running it quietly in the background
 

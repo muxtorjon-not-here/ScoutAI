@@ -49,6 +49,10 @@ BOT_TOKEN = _v["TG_BOT_TOKEN"]
 ADMIN_USER_ID = int(_v["ADMIN_USER_ID"])
 AI_API_KEY = _v["AI_API_KEY"]
 
+# Optional: with a password the dashboard also opens to other devices on your network (your phone);
+# without one it only listens on this computer.
+WEB_PASSWORD = os.getenv("WEB_PASSWORD", "").strip()
+
 INITIAL_CHANNELS = [
     c.strip().lstrip("@").lower()
     for c in os.getenv("INITIAL_CHANNELS", "").split(",")

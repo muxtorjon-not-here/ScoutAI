@@ -1,15 +1,19 @@
 """FastAPI dashboard backend. It shares scout.db with the Telegram bot; the bot-side actions
 (scanning, joining channels) are injected by main.py through `hooks` to avoid a circular import."""
 import asyncio
+import hashlib
+import hmac
 import logging
+import time
 from typing import Awaitable, Callable, Optional
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 import database as db
-from config import BASE_DIR
+from config import BASE_DIR, WEB_PASSWORD
 from utils import parse_channels
 
 log = logging.getLogger("scoutai.web")
@@ -29,14 +33,63 @@ hooks = Hooks()
 app = FastAPI(title="ScoutAI Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 
 
+AUTH_COOKIE = "scoutai_auth"
+_AUTH_TOKEN = hmac.new(WEB_PASSWORD.encode(), b"scoutai-dashboard", hashlib.sha256).hexdigest()
+_failed_logins = {"count": 0, "until": 0.0}
+LOGIN_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>ScoutAI</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#e6e8ee;
+font:16px system-ui,sans-serif}form{width:min(320px,86vw);display:grid;gap:12px}h1{font-size:20px;margin:0 0 4px}
+input,button{padding:12px;border-radius:10px;border:1px solid #2a2f3a;background:#151922;color:inherit;font:inherit}
+button{background:#6366f1;border:0;font-weight:600}p{color:#f87171;margin:0;min-height:1em}</style></head>
+<body><form method="post" action="/login"><h1>ScoutAI</h1>
+<input type="password" name="password" placeholder="Dashboard password" autofocus required>
+<button>Sign in</button><p>__ERROR__</p></form></body></html>"""
+
+
+def _is_authed(request: Request) -> bool:
+    return hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), _AUTH_TOKEN)
+
+
 @app.middleware("http")
-async def only_local_hosts(request: Request, call_next):
-    # Blocks DNS-rebinding: a hostile web page can't talk to the dashboard under another name.
+async def guard(request: Request, call_next):
+    if WEB_PASSWORD:
+        # Network mode: any host name is fine, but every page and API call needs the login cookie.
+        if request.url.path == "/login" or _is_authed(request):
+            return await call_next(request)
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "Not signed in"}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
+    # Local-only mode blocks DNS-rebinding: a hostile page can't reach the dashboard under another name.
     raw = request.headers.get("host", "")
     host = raw.split("]")[0] + "]" if raw.startswith("[") else raw.split(":")[0]
     if host not in ALLOWED_HOSTS:
         return JSONResponse({"detail": "Forbidden host"}, status_code=403)
     return await call_next(request)
+
+
+@app.get("/login", include_in_schema=False)
+async def login_page():
+    return HTMLResponse(LOGIN_HTML.replace("__ERROR__", ""))
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request):
+    if time.time() < _failed_logins["until"]:
+        return HTMLResponse(LOGIN_HTML.replace("__ERROR__", "Too many attempts. Wait a minute."), 429)
+    form = parse_qs((await request.body()).decode("utf-8", "ignore"))
+    attempt = form.get("password", [""])[0]
+    if WEB_PASSWORD and hmac.compare_digest(attempt.encode(), WEB_PASSWORD.encode()):
+        _failed_logins["count"] = 0
+        response = RedirectResponse("/", status_code=303)
+        response.set_cookie(AUTH_COOKIE, _AUTH_TOKEN, max_age=60 * 60 * 24 * 90,
+                            httponly=True, samesite="strict")
+        return response
+    _failed_logins["count"] += 1
+    if _failed_logins["count"] >= 5:
+        _failed_logins.update(count=0, until=time.time() + 60)
+    await asyncio.sleep(1)
+    return HTMLResponse(LOGIN_HTML.replace("__ERROR__", "Wrong password."), 401)
 
 
 # ---------- models ----------
