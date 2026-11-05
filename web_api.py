@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 import database as db
 from config import BASE_DIR, WEB_PASSWORD
-from utils import parse_channels
+from utils import normalize_channel, parse_channels, source_label, source_url
 
 log = logging.getLogger("scoutai.web")
 
@@ -142,10 +142,13 @@ async def _require(opp_id: int) -> dict:
 async def list_opportunities(status: Optional[str] = None, min_score: int = 1):
     if status and status not in db.VALID_STATUSES:
         raise HTTPException(400, f"status must be one of {', '.join(db.VALID_STATUSES)}")
-    return {
-        "opportunities": await db.get_all_opportunities(status, min_score),
-        "stats": await db.get_stats(),
-    }
+    titles = await db.get_channel_titles()
+    items = await db.get_all_opportunities(status, min_score)
+    for item in items:
+        if item["channel_source"] != "manual":
+            item["source_label"] = source_label(item["channel_source"], titles)
+            item["source_url"] = source_url(item["channel_source"])
+    return {"opportunities": items, "stats": await db.get_stats()}
 
 
 @app.post("/api/opportunities", status_code=201)
@@ -187,7 +190,11 @@ async def delete_opportunity(opp_id: int):
 
 @app.get("/api/channels")
 async def list_channels():
-    return {"channels": await db.get_active_channels()}
+    titles = await db.get_channel_titles()
+    return {"channels": [
+        {"key": key, "label": source_label(key, titles), "url": source_url(key)}
+        for key in await db.get_active_channels()
+    ]}
 
 
 @app.post("/api/channels")
@@ -201,9 +208,9 @@ async def add_channels(body: ChannelsIn):
     return result
 
 
-@app.delete("/api/channels/{username}")
+@app.delete("/api/channels/{username:path}")
 async def remove_channel(username: str):
-    if not await db.remove_channel(username.lstrip("@").lower()):
+    if not await db.remove_channel(normalize_channel(username) or username):
         raise HTTPException(404, "Channel is not monitored")
     return {"removed": username}
 

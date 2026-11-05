@@ -105,9 +105,9 @@
     <div class="glass rounded-2xl p-5 space-y-4">
       <div>
         <h2 class="font-semibold flex items-center gap-2"><i data-lucide="radio-tower" class="h-4 w-4 text-indigo-400"></i> Monitored Channels</h2>
-        <p class="text-sm text-slate-400 mt-1">Public channels only. New ones are joined and scanned right away.</p>
+        <p class="text-sm text-slate-400 mt-1">Channels, groups, or one topic of a group (paste the topic's link). Public ones are joined and scanned right away; private groups must already be in your Telegram account.</p>
       </div>
-      <textarea id="channelInput" rows="3" placeholder="Paste one or multiple channels (@edux, @grantlar, https://t.me/...)"
+      <textarea id="channelInput" rows="3" placeholder="Paste channels, groups or topic links (@edux, https://t.me/c/123456/27, ...)"
                 class="w-full rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none p-3 text-sm font-mono placeholder-slate-600"></textarea>
       <button id="addChannelsBtn" class="rounded-lg bg-indigo-500 hover:bg-indigo-400 px-4 py-2 text-sm font-semibold text-white transition">Add Channels</button>
       <div id="channelChips" class="flex flex-wrap gap-2 pt-1"></div>
@@ -260,7 +260,7 @@ function visible(includeDismissed = state.view === 'table' && state.showDismisse
     if (state.score === 'high' && !(o.score >= 8)) return false;
     if (state.score === 'digest' && !(o.score >= 5 && o.score <= 7)) return false;
     if (state.cat && o.category !== state.cat) return false;
-    if (q && !`${o.title} ${o.category} ${o.channel_source} ${o.summary || ''}`.toLowerCase().includes(q)) return false;
+    if (q && !`${o.title} ${o.category} ${o.channel_source} ${o.source_label || ''} ${o.summary || ''}`.toLowerCase().includes(q)) return false;
     return true;
   });
 }
@@ -302,7 +302,7 @@ function cardHTML(o) {
     return `<button data-act="status" data-id="${o.id}" data-status="${key}" class="rounded-md border px-2 py-1 text-xs font-medium transition ${on ? 'bg-indigo-500/25 border-indigo-400/60 text-indigo-100' : 'border-slate-700 text-slate-400 hover:text-slate-100 hover:border-slate-500'}">${label}</button>`;
   };
   const channel = isManual(o) ? '<span class="text-xs text-slate-500">added manually</span>'
-    : `<a href="https://t.me/${esc(o.channel_source)}" target="_blank" rel="noopener" class="text-xs text-indigo-300 hover:text-indigo-200 font-mono truncate">@${esc(o.channel_source)}</a>`;
+    : `<a href="${esc(o.source_url || '#')}" target="_blank" rel="noopener" class="text-xs text-indigo-300 hover:text-indigo-200 font-mono truncate">${esc(o.source_label || o.channel_source)}</a>`;
   const why = o.why_it_matches ? `
     <div class="rounded-lg bg-indigo-500/[.07] border border-indigo-500/20 p-2.5 text-xs leading-relaxed">
       <div class="text-[10px] uppercase tracking-wider text-indigo-300 font-semibold mb-1">✨ Why it matches you</div>
@@ -420,7 +420,7 @@ function renderTable() {
       <td class="px-4 py-3">${scoreBadge(o)}</td>
       <td class="px-4 py-3 font-medium max-w-[360px]"><div class="truncate" title="${esc(o.title)}">${esc(o.title)}</div></td>
       <td class="px-4 py-3 text-slate-400 whitespace-nowrap">${esc(o.category)}</td>
-      <td class="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">${isManual(o) ? 'manual' : '@' + esc(o.channel_source)}</td>
+      <td class="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">${isManual(o) ? 'manual' : esc(o.source_label || o.channel_source)}</td>
       <td class="px-4 py-3">${deadlinePill(o)}</td>
       <td class="px-4 py-3">
         <select data-act="status-select" data-id="${o.id}" class="rounded-md bg-slate-950/70 border border-slate-700 px-2 py-1 text-xs focus:outline-none focus:border-indigo-500/60">
@@ -440,8 +440,8 @@ function renderTable() {
 function renderChannels() {
   $('channelChips').innerHTML = state.channels.map((c) => `
     <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/70 pl-3 pr-1.5 py-1 text-xs font-mono">
-      <a href="https://t.me/${esc(c)}" target="_blank" rel="noopener" class="hover:text-indigo-300">@${esc(c)}</a>
-      <button data-act="rm-channel" data-name="${esc(c)}" class="grid place-items-center h-5 w-5 rounded-full hover:bg-rose-500/20 hover:text-rose-300 text-slate-500" title="Remove">✕</button>
+      <a href="${esc(c.url)}" target="_blank" rel="noopener" class="hover:text-indigo-300">${esc(c.label)}</a>
+      <button data-act="rm-channel" data-name="${esc(c.key)}" class="grid place-items-center h-5 w-5 rounded-full hover:bg-rose-500/20 hover:text-rose-300 text-slate-500" title="Remove">✕</button>
     </span>`).join('') || '<span class="text-sm text-slate-500">No channels yet.</span>';
 }
 
@@ -584,8 +584,8 @@ async function addChannels() {
   const btn = $('addChannelsBtn'); btn.disabled = true; btn.textContent = 'Adding…';
   try {
     const r = await api('/api/channels', { method: 'POST', body: JSON.stringify({ channels: text }) });
-    if (r.added.length) toast(`Added ${r.added.length} channel${r.added.length === 1 ? '' : 's'}: ${r.added.map((c) => '@' + c).join(', ')} — scanning…`);
-    if (r.already.length) toast(`Already monitored: ${r.already.map((c) => '@' + c).join(', ')}`, 'info');
+    if (r.added.length) toast(`Added ${r.added.length} source${r.added.length === 1 ? '' : 's'}: ${r.added.join(', ')} — scanning…`);
+    if (r.already.length) toast(`Already monitored: ${r.already.join(', ')}`, 'info');
     if (r.failed.length) toast(`Couldn't add: ${r.failed.join(', ')}`, 'error');
     if (!r.failed.length) input.value = '';
     await loadChannels(); state.hash = ''; await refresh();
@@ -596,7 +596,7 @@ async function addChannels() {
 async function removeChannel(name) {
   try {
     await api(`/api/channels/${encodeURIComponent(name)}`, { method: 'DELETE' });
-    toast(`Removed @${name}`, 'info');
+    toast('Removed', 'info');
     await loadChannels(); state.hash = ''; await refresh();
   } catch (e) { toast(e.message, 'error'); }
 }

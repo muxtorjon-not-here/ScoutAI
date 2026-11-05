@@ -9,13 +9,16 @@ from datetime import date, datetime, timedelta, timezone
 from telethon import Button, TelegramClient, events
 from telethon.errors import MessageNotModifiedError
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import GetForumTopicsByIDRequest
+from telethon.tl.types import PeerChannel
 
 import uvicorn
 
 import database as db
 import web_api
 from ai_evaluator import evaluate_message, passes_prefilter
-from utils import days_until, parse_channels, parse_deadline_date
+from utils import (days_until, parse_channels, parse_deadline_date, source_label,
+                   source_url, split_source)
 from config import (ADMIN_USER_ID, API_HASH, API_ID, BASE_DIR, BOT_SESSION,
                     BOT_TOKEN, USER_SESSION, WEB_PASSWORD)
 
@@ -38,6 +41,11 @@ bot_client = TelegramClient(BOT_SESSION, API_ID, API_HASH)
 bot_client.parse_mode = None  # formatting is requested explicitly per message
 
 process_lock = asyncio.Lock()  # serialises AI calls so duplicate detection stays accurate
+SOURCE_TITLES: dict[str, str] = {}  # source key -> chat/topic title, filled at startup and on /add
+
+
+def lbl(key: str) -> str:
+    return source_label(key, SOURCE_TITLES)
 
 WEB_HOST = "0.0.0.0" if WEB_PASSWORD else "127.0.0.1"  # network access only when password-protected
 WEB_PORT = 8000
@@ -100,9 +108,10 @@ HELP_TEXT = (
     "/planned, /working, /done - opportunities by status\n"
     "/add_opp <Title> | <Deadline> - track an opportunity you found elsewhere\n"
     "/digest - send saved digest opportunities (score 5-7)\n"
-    "/add ch1 @ch2 https://t.me/ch3 - monitor channels (spaces, commas or lines)\n"
-    "/remove ch1 @ch2 - stop monitoring channels\n"
-    "/channels - list monitored channels\n"
+    "/add ch1 @ch2 https://t.me/ch3 - monitor channels or groups (spaces, commas or lines)\n"
+    "   a link to a topic (t.me/group/27 or t.me/c/123/27) monitors just that topic\n"
+    "/remove ch1 @ch2 - stop monitoring (use the same link to remove a topic)\n"
+    "/channels - list monitored channels, groups and topics\n"
     "/profile - show your filtering profile\n"
     "/set_profile <new text> - replace your filtering profile\n"
     "/catchup - rescan the last 10 posts of every channel\n\n"
@@ -158,7 +167,7 @@ def render_card(item: dict, header: str | None = None) -> str:
     lines.append(f"<b>#{item['id']} · {esc(item['title'])}</b>")
     lines.append(
         "📂 Added manually" if manual
-        else f"⭐ {item['score']}/10 · 📂 {esc(item['category'])} · 📣 @{esc(item['channel_source'])}"
+        else f"⭐ {item['score']}/10 · 📂 {esc(item['category'])} · 📣 {esc(lbl(item['channel_source']))}"
     )
     lines.append(deadline_line)
     lines.append(f"📊 <b>Status:</b> {STATUS_LABELS.get(status, status)}")
@@ -362,7 +371,7 @@ async def process_message(channel: str, msg) -> bool:
     if not passes_prefilter(text):
         return True
 
-    link = f"https://t.me/{channel}/{msg.id}"
+    link = source_url(channel, msg.id)
     if await db.opportunity_exists(link):
         return True
 
@@ -418,12 +427,36 @@ async def process_message(channel: str, msg) -> bool:
     return True
 
 
+async def resolve_peer(peer):
+    """Looks up a channel/group by username, or by id for private chats the account is in."""
+    ref = PeerChannel(peer) if isinstance(peer, int) else peer
+    try:
+        return await user_client.get_entity(ref)
+    except ValueError:
+        if not isinstance(peer, int):
+            raise
+        await user_client.get_dialogs()  # fills the entity cache for private chats
+        return await user_client.get_entity(ref)
+
+
+async def topic_title(entity, topic_id: int) -> str:
+    result = await user_client(GetForumTopicsByIDRequest(peer=entity, topics=[topic_id]))
+    title = getattr(result.topics[0], "title", None) if result.topics else None
+    if not title:
+        raise ValueError(f"topic {topic_id} not found")
+    return title
+
+
 async def scan_channel(username: str, limit: int, forced: bool = False) -> int:
-    """Scans a channel. Normal mode fetches posts newer than last_message_id; forced mode
-    fetches the latest `limit` posts regardless. Returns the number of posts examined."""
-    entity = await user_client.get_entity(username)
+    """Scans a source (channel, group, or one topic of a group). Normal mode fetches posts newer
+    than last_message_id; forced mode fetches the latest `limit` posts regardless. Returns the
+    number of posts examined."""
+    peer, topic = split_source(username)
+    entity = await resolve_peer(peer)
     last_id = await db.get_last_message_id(username)
     kwargs = {"limit": limit}
+    if topic:
+        kwargs["reply_to"] = topic
     if not forced and last_id:
         kwargs["min_id"] = last_id
     msgs = sorted(
@@ -436,18 +469,21 @@ async def scan_channel(username: str, limit: int, forced: bool = False) -> int:
             if not forced and m.id <= await db.get_last_message_id(username):
                 continue
             if not await process_message(username, m):
-                log.warning("AI unavailable; stopping scan of @%s at post %s", username, m.id)
+                log.warning("AI unavailable; stopping scan of %s at post %s", lbl(username), m.id)
                 break
             await db.set_last_message_id(username, m.id)
             examined += 1
     return examined
 
 
-async def ensure_joined(username: str) -> None:
+async def ensure_joined(key: str) -> None:
+    peer, _ = split_source(key)
+    if isinstance(peer, int):
+        return  # private chats can't be joined by id: the account must already be a member
     try:
-        await user_client(JoinChannelRequest(await user_client.get_entity(username)))
+        await user_client(JoinChannelRequest(await user_client.get_entity(peer)))
     except Exception as exc:
-        log.debug("join @%s: %r", username, exc)
+        log.debug("join @%s: %r", peer, exc)
 
 
 async def catch_up_channels() -> int:
@@ -461,32 +497,49 @@ async def catch_up_channels() -> int:
             limit = NEW_CHANNEL_SCAN_LIMIT if first_run else CATCHUP_LIMIT
             n = await scan_channel(username, limit)
             total += n
-            log.info("catch-up @%s: %d posts examined", username, n)
+            log.info("catch-up %s: %d posts examined", lbl(username), n)
         except ValueError:
-            log.warning("catch-up: @%s does not exist; fix it with /remove and /add", username)
+            log.warning("catch-up: %s was not found; fix it with /remove and /add", lbl(username))
         except Exception:
-            log.exception("catch-up failed for @%s", username)
+            log.exception("catch-up failed for %s", lbl(username))
     return total
 
 
 # ---------- live channel listener ----------
 
+def topic_of(msg) -> int:
+    """Topic id of a message in a forum group (1 is the General topic)."""
+    reply = msg.reply_to
+    if reply is not None and reply.forum_topic:
+        return reply.reply_to_top_id or reply.reply_to_msg_id or 1
+    return 1
+
+
 @user_client.on(events.NewMessage(incoming=True))
 async def on_channel_post(event):
-    if not event.is_channel or event.is_group:
+    if not event.is_channel:  # channels and supergroups; not private chats or small groups
         return
     chat = await event.get_chat()
     username = (getattr(chat, "username", None) or "").lower()
-    if not username or username not in await db.get_active_channels():
+    bases = [f"c/{chat.id}"] + ([username] if username else [])
+    active = set(await db.get_active_channels())
+    candidates = list(bases)
+    if getattr(chat, "forum", False):
+        candidates += [f"{b}/{topic_of(event.message)}" for b in bases]
+    keys = [k for k in candidates if k in active]
+    if not keys:
         return
     async with process_lock:
-        if event.message.id <= await db.get_last_message_id(username):
+        msg_id = event.message.id
+        keys = [k for k in keys if msg_id > await db.get_last_message_id(k)]
+        if not keys:
             return
         try:
-            if await process_message(username, event.message):
-                await db.set_last_message_id(username, event.message.id)
+            if await process_message(keys[0], event.message):
+                for k in keys:
+                    await db.set_last_message_id(k, msg_id)
         except Exception:
-            log.exception("live processing failed for @%s/%s", username, event.message.id)
+            log.exception("live processing failed for %s/%s", lbl(keys[0]), msg_id)
 
 
 # ---------- bot: text messages and commands ----------
@@ -565,8 +618,8 @@ async def handle_command(cmd: str, arg: str) -> None:
     elif cmd == "channels":
         channels = await db.get_active_channels()
         await say(
-            "Monitored channels:\n" + "\n".join(f"• @{c}" for c in channels)
-            if channels else "No channels yet. Use /add @channel",
+            "Monitored sources:\n" + "\n".join(f"• {lbl(c)}" for c in channels)
+            if channels else "Nothing monitored yet. Use /add @channel",
             INFO_TTL,
         )
 
@@ -594,7 +647,7 @@ async def handle_command(cmd: str, arg: str) -> None:
             try:
                 total += await scan_channel(username, FORCED_CATCHUP_LIMIT, forced=True)
             except Exception as exc:
-                await say(f"⚠️ @{username}: {exc}", ERROR_TTL)
+                await say(f"⚠️ {lbl(username)}: {exc}", ERROR_TTL)
         await say(f"Catch-up done ({total} posts examined).")
 
     else:
@@ -602,7 +655,7 @@ async def handle_command(cmd: str, arg: str) -> None:
 
 
 def at_list(names: list[str]) -> str:
-    return ", ".join(f"@{n}" for n in names)
+    return ", ".join(lbl(n) for n in names)
 
 
 def plural(n: int, word: str) -> str:
@@ -610,21 +663,41 @@ def plural(n: int, word: str) -> str:
 
 
 async def add_channels_core(names: list[str]) -> tuple[list[str], list[str], list[str]]:
-    """Validates, joins and stores channels. Returns (added, already monitored, failed)."""
+    """Validates, joins and stores sources (channels, groups, group topics). Returns
+    (added keys, already monitored keys, failure messages)."""
     monitored = set(await db.get_active_channels())
     added, already, failed = [], [], []
-    for name in names:
-        if name in monitored:
-            already.append(name)
+    for key in names:
+        if key in monitored:
+            already.append(key)
             continue
+        peer, topic = split_source(key)
         try:
-            await user_client.get_entity(name)
+            entity = await resolve_peer(peer)
         except Exception:
-            failed.append(f"@{name} (not found)")
+            hint = " (private chats only work if your account is a member)" if isinstance(peer, int) else ""
+            failed.append(f"{lbl(key)} (not found{hint})")
             continue
-        await ensure_joined(name)
-        await db.add_channel(name)
-        added.append(name)
+        title = getattr(entity, "title", "") or ""
+        if topic and not getattr(entity, "forum", False):
+            # not a forum: the trailing number was just a post id, so monitor the whole chat
+            key, topic = key.rsplit("/", 1)[0], None
+            if key in monitored or key in added:
+                already.append(key)
+                continue
+        if topic:
+            try:
+                title = f"{title} › {await topic_title(entity, topic)}"
+            except Exception:
+                failed.append(f"{lbl(key)} (topic not found)")
+                continue
+        if key in monitored or key in added:
+            already.append(key)
+            continue
+        await ensure_joined(key)
+        await db.add_channel(key, title)
+        SOURCE_TITLES[key] = title
+        added.append(key)
         await asyncio.sleep(0.5)  # be gentle with Telegram's flood limits
     return added, already, failed
 
@@ -635,7 +708,7 @@ async def scan_new_channels(names: list[str]) -> int:
         try:
             total += await scan_channel(name, NEW_CHANNEL_SCAN_LIMIT, forced=True)
         except Exception as exc:
-            log.warning("initial scan of @%s failed: %r", name, exc)
+            log.warning("initial scan of %s failed: %r", lbl(name), exc)
     return total
 
 
@@ -646,8 +719,8 @@ async def web_add_channels(arg: str) -> dict:
     if added:
         _spawn(scan_new_channels(added))
     return {
-        "added": added,
-        "already": already,
+        "added": [lbl(k) for k in added],
+        "already": [lbl(k) for k in already],
         "failed": [f"{t} (invalid name)" for t in invalid] + failed,
     }
 
@@ -821,6 +894,7 @@ def _lan_ip() -> str:
 
 async def main() -> None:
     await db.init_db()
+    SOURCE_TITLES.update(await db.get_channel_titles())
     await bot_client.start(bot_token=BOT_TOKEN)
     await user_client.start()  # first run asks for phone number and login code in the console
     log.info("Both clients connected")

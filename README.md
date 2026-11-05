@@ -94,9 +94,10 @@ Open your bot and send `/help`. The commands:
 
 | Command | What it does |
 |---|---|
-| `/add channel1 @channel2 https://t.me/channel3` | Start watching channels |
-| `/remove channel1` | Stop watching a channel |
-| `/channels` | List the channels you watch |
+| `/add channel1 @channel2 https://t.me/channel3` | Start watching channels or groups |
+| `/add https://t.me/c/123456/27` | Watch just one topic of a group (see below) |
+| `/remove channel1` | Stop watching (paste the same link to remove a topic) |
+| `/channels` | List the channels, groups and topics you watch |
 | `/board` | Show your active opportunities |
 | `/planned`, `/working`, `/done` | Opportunities by status |
 | `/add_opp Title \| Deadline` | Track something you found yourself |
@@ -107,13 +108,24 @@ Open your bot and send `/help`. The commands:
 
 Every opportunity arrives as a card with buttons to set its status, edit its deadline, or open the original post.
 
+### Groups and topics
+
+ScoutAI can watch group chats too, not only channels.
+
+- **Public group:** `/add @groupname` works like a channel.
+- **One topic of a group:** some groups are split into topics (like "News" or "Jobs"). Open the topic in Telegram, long-press or right-click a message in it, choose **Copy Link**, and send `/add <that link>`. Only that topic is watched, which keeps the noise down. A link such as `https://t.me/c/2495717582/27` is a topic link; the number at the end is the topic.
+- **Private group:** your Telegram account must already be a member, because ScoutAI reads as you and can't join private groups. Add them with the same `/add` link. The bot never posts in groups.
+- If you paste a link to a single message in a group that has no topics, the whole group is watched.
+
+Groups are chatty, so the AI will spend more time filtering them. Topics are the better choice when the group has one.
+
 ### On the dashboard
 
 While the bot is running, open **http://localhost:8000**. It has three views:
 
 - **Board:** tabs for Inbox, Planned, Working, Finished and Dismissed. You can sort by deadline, score or newest, and keys `1` to `5` switch tabs.
 - **Table:** every opportunity in one list.
-- **Channels & AI Profile:** add or remove channels, edit your profile, and trigger a rescan.
+- **Channels & AI Profile:** add or remove channels, groups and topics, edit your profile, and trigger a rescan.
 
 By default the dashboard is only reachable from your own computer.
 

@@ -16,7 +16,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
     username TEXT PRIMARY KEY,
     last_message_id INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER NOT NULL DEFAULT 1
+    is_active INTEGER NOT NULL DEFAULT 1,
+    title TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS user_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -71,6 +72,10 @@ async def init_db() -> None:
             await db.execute(
                 "ALTER TABLE seen_opportunities ADD COLUMN status TEXT DEFAULT 'UNTRACKED'"
             )
+        async with db.execute("PRAGMA table_info(channels)") as cur:
+            channel_columns = {row[1] for row in await cur.fetchall()}
+        if "title" not in channel_columns:
+            await db.execute("ALTER TABLE channels ADD COLUMN title TEXT NOT NULL DEFAULT ''")
         await db.execute("UPDATE seen_opportunities SET status = 'UNTRACKED' WHERE status IS NULL")
         await db.execute(
             "UPDATE seen_opportunities SET deadline = ? WHERE deadline IS NULL "
@@ -118,14 +123,21 @@ async def get_active_channels() -> list[str]:
             return [row[0] for row in await cur.fetchall()]
 
 
-async def add_channel(username: str) -> None:
+async def add_channel(username: str, title: str = "") -> None:
+    """`username` is a source key: 'name', 'name/27' (topic), 'c/123' or 'c/123/27' (private)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO channels (username, is_active) VALUES (?, 1) "
-            "ON CONFLICT(username) DO UPDATE SET is_active = 1",
-            (username,),
+            "INSERT INTO channels (username, is_active, title) VALUES (?, 1, ?) "
+            "ON CONFLICT(username) DO UPDATE SET is_active = 1, title = excluded.title",
+            (username, title),
         )
         await db.commit()
+
+
+async def get_channel_titles() -> dict[str, str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT username, title FROM channels WHERE title != ''") as cur:
+            return {row[0]: row[1] for row in await cur.fetchall()}
 
 
 async def remove_channel(username: str) -> bool:

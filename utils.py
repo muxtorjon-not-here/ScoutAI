@@ -6,10 +6,57 @@ USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
 
 
 def normalize_channel(raw: str) -> str | None:
+    """Turns a username, t.me link or numeric chat id into a source key:
+    'name' (channel or group), 'name/27' (topic of a group), 'c/123' (private group by id)
+    or 'c/123/27' (topic of a private group). A trailing number may also be a plain post id;
+    the bot decides which once it can look the chat up."""
     s = raw.strip()
     s = re.sub(r"^(?:https?://)?(?:www\.)?(?:t|telegram)\.me/(?:s/)?", "", s, flags=re.I)
-    s = s.lstrip("@").split("/")[0].split("?")[0]
-    return s.lower() if USERNAME_RE.match(s) else None
+    s = s.lstrip("@").split("?")[0].split("#")[0]
+    parts = [p for p in s.split("/") if p]
+    if not parts:
+        return None
+    if re.fullmatch(r"-100\d+", parts[0]):
+        parts[:1] = ["c", parts[0][4:]]
+    if parts[0].lower() == "c":
+        if len(parts) < 2 or not parts[1].isdigit():
+            return None
+        key, rest = f"c/{int(parts[1])}", parts[2:]
+    else:
+        if not USERNAME_RE.match(parts[0]):
+            return None
+        key, rest = parts[0].lower(), parts[1:]
+    if rest and rest[0].isdigit() and int(rest[0]) > 0:
+        key += f"/{int(rest[0])}"
+    return key
+
+
+def split_source(key: str) -> tuple[str | int, int | None]:
+    """Source key -> (username, or numeric chat id for private chats; topic id or None)."""
+    parts = key.split("/")
+    if parts[0] == "c":
+        peer: str | int = int(parts[1])
+        rest = parts[2:]
+    else:
+        peer, rest = parts[0], parts[1:]
+    return peer, (int(rest[0]) if rest else None)
+
+
+def source_url(key: str, message_id: int | None = None) -> str:
+    """Link to a source, or to one message in it (inside its topic when it has one)."""
+    peer, topic = split_source(key)
+    base = f"https://t.me/c/{peer}" if isinstance(peer, int) else f"https://t.me/{peer}"
+    tail = "/".join(str(n) for n in (topic, message_id) if n)
+    return f"{base}/{tail}" if tail else base
+
+
+def source_label(key: str, titles: dict[str, str] | None = None) -> str:
+    """Readable name: the saved chat/topic title when known, else @username or 'private chat'."""
+    if titles and titles.get(key):
+        return titles[key]
+    peer, topic = split_source(key)
+    name = f"@{peer}" if isinstance(peer, str) else f"private chat {peer}"
+    return f"{name} › topic {topic}" if topic else name
 
 
 def parse_channels(arg: str) -> tuple[list[str], list[str]]:
