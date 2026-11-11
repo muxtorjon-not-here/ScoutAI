@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The dashboard is served over plain HTTP on a LAN or Tailscale address (192.168.x.x, 10.x.x.x,
+     100.x.x.x, *.ts.net ...). Those IPs vary per user so they cannot be listed one by one, hence
+     cleartext is allowed app-wide. Access is still guarded by the dashboard password / Bearer token. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+</network-security-config>
