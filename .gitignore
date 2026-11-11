@@ -19,3 +19,10 @@ __pycache__/
 
 # Windows shortcuts
 *.lnk
+google_credentials.json
+*-credentials.json
+*.keystore
+*.jks
+mobile/**/local.properties
+mobile/**/build/
+mobile/**/.gradle/

@@ -112,6 +112,17 @@
       <button id="addChannelsBtn" class="rounded-lg bg-indigo-500 hover:bg-indigo-400 px-4 py-2 text-sm font-semibold text-white transition">Add Channels</button>
       <div id="channelChips" class="flex flex-wrap gap-2 pt-1"></div>
     </div>
+    <div class="glass rounded-2xl p-5 space-y-4 lg:col-span-2">
+      <div>
+        <h2 class="font-semibold flex items-center gap-2"><i data-lucide="globe" class="h-4 w-4 text-indigo-400"></i> Opportunity Websites</h2>
+        <p class="text-sm text-slate-400 mt-1">Scanned every 2 hours, like Telegram channels. Pause the ones you don't want, or add any site's RSS feed.</p>
+      </div>
+      <div class="flex gap-2">
+        <input id="webInput" type="url" placeholder="https://example.com/feed" class="flex-1 min-w-0 rounded-lg bg-slate-950/60 border border-slate-800 focus:border-indigo-500/60 focus:outline-none px-3 py-2 text-sm font-mono placeholder-slate-600">
+        <button id="addWebBtn" class="rounded-lg bg-indigo-500 hover:bg-indigo-400 px-4 py-2 text-sm font-semibold text-white transition whitespace-nowrap">Add feed</button>
+      </div>
+      <div id="webList" class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3"></div>
+    </div>
     <div class="glass rounded-2xl p-5 space-y-4">
       <div>
         <h2 class="font-semibold flex items-center gap-2"><i data-lucide="brain-circuit" class="h-4 w-4 text-indigo-400"></i> AI Filtering Profile</h2>
@@ -438,6 +449,7 @@ function renderTable() {
 }
 
 function renderChannels() {
+  renderWebSources();
   $('channelChips').innerHTML = state.channels.map((c) => `
     <span class="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/70 pl-3 pr-1.5 py-1 text-xs font-mono">
       <a href="${esc(c.url)}" target="_blank" rel="noopener" class="hover:text-indigo-300">${esc(c.label)}</a>
@@ -496,7 +508,41 @@ async function refresh() {
 
 async function loadChannels() {
   state.channels = (await api('/api/channels')).channels;
+  state.webSources = (await api('/api/web_sources')).sources;
   if (state.view === 'channels') renderChannels();
+}
+
+function renderWebSources() {
+  $('webList').innerHTML = (state.webSources || []).map((s) => `
+    <div class="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 ${s.enabled ? '' : 'opacity-50'}">
+      <input type="checkbox" data-act="web-toggle" data-id="${esc(s.id)}" ${s.enabled ? 'checked' : ''} class="h-4 w-4 accent-indigo-500">
+      <div class="min-w-0 flex-1">
+        <a href="https://${esc(s.id)}" target="_blank" rel="noopener" class="block truncate text-sm hover:text-indigo-300">${esc(s.name)}</a>
+        <div class="text-xs text-slate-500">${s.found} found${s.custom ? ' · yours' : ''}</div>
+      </div>
+      ${s.custom ? `<button data-act="web-remove" data-id="${esc(s.id)}" class="text-slate-500 hover:text-rose-300" title="Remove">✕</button>` : ''}
+    </div>`).join('') || '<span class="text-sm text-slate-500">No websites yet.</span>';
+}
+
+async function addWebSource() {
+  const input = $('webInput'), url = input.value.trim();
+  if (!url) return;
+  try {
+    const r = await api('/api/web_sources', { method: 'POST', body: JSON.stringify({ url }) });
+    toast(`Added ${r.name}. It is included in the next scan.`);
+    input.value = '';
+    await loadChannels();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function toggleWebSource(id, enabled) {
+  try { await api(`/api/web_sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }); await loadChannels(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function removeWebSource(id) {
+  try { await api(`/api/web_sources/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadChannels(); }
+  catch (e) { toast(e.message, 'error'); }
 }
 
 async function mutate(fn) {
@@ -647,10 +693,12 @@ document.addEventListener('click', (e) => {
     case 'dl-cancel': return cancelDeadlineEdit();
     case 'delete': return deleteOpp(id);
     case 'rm-channel': return removeChannel(t.dataset.name);
+    case 'web-remove': return removeWebSource(t.dataset.id);
     case 'expand': state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id); return render();
   }
 });
 document.addEventListener('change', (e) => {
+  if (e.target.dataset.act === 'web-toggle') toggleWebSource(e.target.dataset.id, e.target.checked);
   if (e.target.dataset.act === 'status-select') setStatus(Number(e.target.dataset.id), e.target.value);
   if (e.target.dataset.act === 'ksort') { state.kSort = e.target.value; savePref('ksort', state.kSort); render(); }
 });
@@ -662,6 +710,7 @@ $('modalClose').addEventListener('click', closeModal);
 $('modalCancel').addEventListener('click', closeModal);
 $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) closeModal(); });
 $('addChannelsBtn').addEventListener('click', addChannels);
+$('addWebBtn').addEventListener('click', addWebSource);
 $('saveProfileBtn').addEventListener('click', saveProfile);
 $('newForm').addEventListener('submit', async (e) => {
   e.preventDefault();

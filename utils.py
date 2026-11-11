@@ -44,6 +44,8 @@ def split_source(key: str) -> tuple[str | int, int | None]:
 
 def source_url(key: str, message_id: int | None = None) -> str:
     """Link to a source, or to one message in it (inside its topic when it has one)."""
+    if key.startswith("web:"):
+        return f"https://{key[4:]}"
     peer, topic = split_source(key)
     base = f"https://t.me/c/{peer}" if isinstance(peer, int) else f"https://t.me/{peer}"
     tail = "/".join(str(n) for n in (topic, message_id) if n)
@@ -54,6 +56,8 @@ def source_label(key: str, titles: dict[str, str] | None = None) -> str:
     """Readable name: the saved chat/topic title when known, else @username or 'private chat'."""
     if titles and titles.get(key):
         return titles[key]
+    if key.startswith("web:"):
+        return key[4:]
     peer, topic = split_source(key)
     name = f"@{peer}" if isinstance(peer, str) else f"private chat {peer}"
     return f"{name} › topic {topic}" if topic else name

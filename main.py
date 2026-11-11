@@ -14,13 +14,16 @@ from telethon.tl.types import PeerChannel
 
 import uvicorn
 
+import calendar_sync
 import database as db
 import web_api
-from ai_evaluator import evaluate_message, passes_prefilter
+import web_sources
+from ai_evaluator import evaluate_message, passes_prefilter, triage_listings
+from dedupe import extract_urls, find_duplicate
 from utils import (days_until, parse_channels, parse_deadline_date, source_label,
                    source_url, split_source)
 from config import (ADMIN_USER_ID, API_HASH, API_ID, BASE_DIR, BOT_SESSION,
-                    BOT_TOKEN, USER_SESSION, WEB_PASSWORD)
+                    BOT_TOKEN, USER_SESSION, WEB_HOST, WEB_PASSWORD)
 
 for _stream in (sys.stdout, sys.stderr):  # emoji in the banner/logs must not crash cp1252 consoles
     if _stream is not None and hasattr(_stream, "reconfigure"):
@@ -47,7 +50,6 @@ SOURCE_TITLES: dict[str, str] = {}  # source key -> chat/topic title, filled at 
 def lbl(key: str) -> str:
     return source_label(key, SOURCE_TITLES)
 
-WEB_HOST = "0.0.0.0" if WEB_PASSWORD else "127.0.0.1"  # network access only when password-protected
 WEB_PORT = 8000
 AI_DELAY_SECONDS = 3.0
 DIGEST_MIN_SCORE = 5
@@ -114,7 +116,9 @@ HELP_TEXT = (
     "/channels - list monitored channels, groups and topics\n"
     "/profile - show your filtering profile\n"
     "/set_profile <new text> - replace your filtering profile\n"
-    "/catchup - rescan the last 10 posts of every channel\n\n"
+    "/catchup - rescan the last 10 posts of every channel\n"
+    "/web - opportunity websites being scanned (/web_off, /web_on, /web_add <rss url>, /web_scan)\n"
+    "/calendar - sync Planned/Working opportunities to Google Calendar\n\n"
     "Every opportunity card has buttons: set its status, edit its deadline, open the post.\n"
     "Command messages and short replies delete themselves after a few seconds."
 )
@@ -366,14 +370,30 @@ async def send_digest() -> int:
 # ---------- evaluation pipeline ----------
 
 async def process_message(channel: str, msg) -> bool:
-    """Evaluates one post. Returns False only when the AI provider failed (retry later)."""
-    text = msg.message or ""
+    """Evaluates one Telegram post. Returns False only when the AI provider failed (retry later)."""
+    return await process_text(channel, msg.message or "", source_url(channel, msg.id))
+
+
+async def process_text(channel: str, text: str, link: str, own_url: str = "") -> bool:
+    """Evaluates one post or web article from `channel` (a source key). Returns False only when
+    the AI provider failed (retry later). `own_url` is the article's own address, kept so the
+    same opportunity found elsewhere is recognised by its link."""
     if not passes_prefilter(text):
         return True
-
-    link = source_url(channel, msg.id)
     if await db.opportunity_exists(link):
         return True
+
+    # The same registration link in an earlier post means the same opportunity: skip before the AI call
+    urls = extract_urls(text)
+    if own_url:
+        urls = list(dict.fromkeys([*extract_urls(own_url), *urls]))
+    if len(urls) > 3:  # a roundup linking many opportunities says nothing about any single one
+        urls = urls[:1] if own_url else []
+    if urls:
+        repeat = find_duplicate("", None, urls, await db.get_dedupe_candidates())
+        if repeat:
+            log.info("skip %s (same link as #%s)", link, repeat["id"])
+            return True
 
     profile = await db.get_profile()
     titles = await db.get_recent_titles(15)
@@ -398,6 +418,11 @@ async def process_message(channel: str, msg) -> bool:
         log.info("skip %s (deadline %s already passed)", link, deadline_iso)
         return True
 
+    repeat = find_duplicate(ev.title, deadline_iso, urls, await db.get_dedupe_candidates())
+    if repeat:
+        log.info("skip %s (repeats #%s %s)", link, repeat["id"], repeat["title"])
+        return True
+
     immediate = score >= IMMEDIATE_MIN_SCORE or (
         days_left is not None and days_left <= URGENT_DEADLINE_DAYS
     )
@@ -413,6 +438,7 @@ async def process_message(channel: str, msg) -> bool:
         summary=ev.action_required,
         why_it_matches=ev.why_it_matches,
         notified=immediate,
+        source_urls=" ".join(urls),
     )
     if not opp_id:
         return True
@@ -503,6 +529,43 @@ async def catch_up_channels() -> int:
         except Exception:
             log.exception("catch-up failed for %s", lbl(username))
     return total
+
+
+# ---------- opportunity websites ----------
+
+WEB_SCAN_INTERVAL = 2 * 3600
+web_scan_lock = asyncio.Lock()
+
+
+async def _locked_process(*args) -> bool:
+    async with process_lock:  # same serialisation as Telegram posts, so duplicate checks stay accurate
+        return await process_text(*args)
+
+
+async def run_web_scan() -> int:
+    """Scans every enabled website once. Returns how many listings were fully evaluated."""
+    if web_scan_lock.locked():
+        return 0
+    async with web_scan_lock:
+        try:
+            stats = await web_sources.scan_web(_locked_process, triage_listings, await db.get_profile())
+        except Exception:
+            log.exception("website scan failed")
+            return 0
+        log.info("website scan: %s", stats)
+        return stats["evaluated"]
+
+
+async def web_scan_loop() -> None:
+    await asyncio.sleep(90)  # let the Telegram catch-up go first
+    while True:
+        await run_web_scan()
+        await asyncio.sleep(WEB_SCAN_INTERVAL)
+
+
+async def scan_everything() -> int:
+    """Used by the dashboard's Scan button: Telegram sources, then websites."""
+    return await catch_up_channels() + await run_web_scan()
 
 
 # ---------- live channel listener ----------
@@ -638,6 +701,63 @@ async def handle_command(cmd: str, arg: str) -> None:
             return
         await db.set_profile(arg)
         await say("✅ Profile updated. It applies to all new evaluations.")
+
+    elif cmd == "web":
+        sources = await db.get_web_sources()
+        lines = [
+            f"{'✅' if s['enabled'] else '⏸'} {s['id']} — {s['name']} ({s['found']} found)"
+            for s in sources
+        ]
+        await say(
+            "Opportunity websites (scanned every 2 hours):\n" + "\n".join(lines)
+            + "\n\n/web_off <id> · /web_on <id> · /web_add <rss url> · /web_remove <id> · /web_scan",
+            INFO_TTL * 2,
+        )
+
+    elif cmd in ("web_on", "web_off"):
+        source_id = arg.strip().lower().removeprefix("web:")
+        if not source_id or not await db.set_web_source_enabled(source_id, cmd == "web_on"):
+            await say("Usage: /web_on <id> or /web_off <id>. See /web for the ids.", ERROR_TTL)
+        else:
+            await say(f"{'✅ Enabled' if cmd == 'web_on' else '⏸ Paused'}: {source_id}")
+
+    elif cmd == "web_add":
+        url = arg.strip()
+        if not url.startswith(("http://", "https://")):
+            await say("Usage: /web_add https://example.com/feed (an RSS or Atom feed)", ERROR_TTL)
+            return
+        try:
+            title = await web_sources.validate_feed(url)
+        except ValueError as exc:
+            await say(f"❌ Couldn't add it: {exc}", ERROR_TTL)
+            return
+        source_id = web_sources.source_id_for(url)
+        if await db.add_custom_web_source(source_id, title, url):
+            SOURCE_TITLES[f"web:{source_id}"] = title
+            await say(f"✅ Added {title} ({source_id}). It is included in the next website scan.")
+        else:
+            await say(f"ℹ️ {source_id} is already in the list.", ERROR_TTL)
+
+    elif cmd == "web_remove":
+        source_id = arg.strip().lower().removeprefix("web:")
+        if await db.remove_custom_web_source(source_id):
+            await say(f"🗑 Removed {source_id}")
+        else:
+            await say("Only sites you added yourself can be removed; use /web_off to pause built-in ones.", ERROR_TTL)
+
+    elif cmd == "web_scan":
+        await say("🌐 Scanning opportunity websites… (can take a few minutes)", 10)
+        count = await run_web_scan()
+        await say(f"🌐 Website scan done: {plural(count, 'listing')} evaluated.")
+
+    elif cmd == "calendar":
+        if not calendar_sync.enabled():
+            await say("📅 Google Calendar is not set up: " + calendar_sync.setup_hint()
+                      + ". See the 'Google Calendar' section of the README.", ERROR_TTL)
+            return
+        count = await calendar_sync.sync_all()
+        await say(f"📅 Calendar synced. {count} Planned/Working opportunit{'y was' if count == 1 else 'ies were'} "
+                  "newly added (ones without a deadline are skipped).")
 
     elif cmd == "catchup":
         channels = await db.get_active_channels()
@@ -805,7 +925,10 @@ async def handle_callback(event, data: str) -> None:
             target = "UNTRACKED"  # tapping the active state again clears it
         await db.update_opportunity_status(opp_id, target)
         item["status"] = target
-        await event.answer(STATUS_TOASTS[target])
+        toast = STATUS_TOASTS[target]
+        if calendar_sync.enabled() and target in calendar_sync.TRACKED:
+            toast += " · 📅 added to calendar" if item.get("deadline_date") else " · set a deadline to get a calendar reminder"
+        await event.answer(toast)
         await event.edit(
             render_card(item), buttons=card_buttons(item), parse_mode="html", link_preview=False
         )
@@ -894,7 +1017,11 @@ def _lan_ip() -> str:
 
 async def main() -> None:
     await db.init_db()
+    await db.sync_web_catalogue(web_sources.CATALOGUE)
     SOURCE_TITLES.update(await db.get_channel_titles())
+    cleaned = await db.dismiss_existing_duplicates()
+    if cleaned:
+        log.info("Moved %d duplicate opportunities to Dismissed", cleaned)
     await bot_client.start(bot_token=BOT_TOKEN)
     await user_client.start()  # first run asks for phone number and login code in the console
     log.info("Both clients connected")
@@ -904,7 +1031,11 @@ async def main() -> None:
     except Exception as exc:
         log.warning("Could not message admin (open the bot and press Start first): %r", exc)
 
-    web_api.hooks.scan = catch_up_channels
+    calendar_sync.on_error = lambda text: say(text, ERROR_TTL)
+    db.change_hooks.append(calendar_sync.sync)
+    if calendar_sync.enabled():
+        _spawn(calendar_sync.sync_all())  # backfills items already marked Planned/Working
+    web_api.hooks.scan = scan_everything
     web_api.hooks.add_channels = web_add_channels
     web_server = uvicorn.Server(uvicorn.Config(
         web_api.app, host=WEB_HOST, port=WEB_PORT, log_level="warning",
@@ -933,6 +1064,7 @@ async def main() -> None:
 
     scheduler = asyncio.create_task(digest_scheduler())
     catchup = asyncio.create_task(catch_up_channels())
+    web_scanner = asyncio.create_task(web_scan_loop())
     try:
         await asyncio.gather(
             user_client.run_until_disconnected(), bot_client.run_until_disconnected(), run_web()
@@ -941,6 +1073,7 @@ async def main() -> None:
         web_server.should_exit = True
         scheduler.cancel()
         catchup.cancel()
+        web_scanner.cancel()
 
 
 if __name__ == "__main__":

@@ -5,3 +5,8 @@ python-dotenv
 httpx
 fastapi
 uvicorn
+google-auth
+requests
+feedparser
+beautifulsoup4
+tzdata

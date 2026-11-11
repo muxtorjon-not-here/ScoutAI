@@ -103,6 +103,8 @@ Open your bot and send `/help`. The commands:
 | `/add_opp Title \| Deadline` | Track something you found yourself |
 | `/digest` | Send the saved score 5 to 7 opportunities now |
 | `/catchup` | Rescan the last 10 posts of every channel |
+| `/web`, `/web_add <feed>`, `/web_scan` | Opportunity websites (see below) |
+| `/calendar` | Sync Planned/Working opportunities to Google Calendar |
 | `/profile` | Show what you told the AI about yourself |
 | `/set_profile new text` | Rewrite your profile |
 
@@ -118,6 +120,43 @@ ScoutAI can watch group chats too, not only channels.
 - If you paste a link to a single message in a group that has no topics, the whole group is watched.
 
 Groups are chatty, so the AI will spend more time filtering them. Topics are the better choice when the group has one.
+
+### Opportunity websites
+
+Besides Telegram, ScoutAI reads a list of well-known opportunity websites every 2 hours (Opportunity Desk, Opportunities For Africans, Scholars4Dev, Scholarships Corner, Devpost hackathons, CTFtime, Codeforces and more). Each new listing goes through the same AI scoring as a Telegram post, after a quick title check that drops obvious mismatches, so only matches for your profile reach you.
+
+- `/web` lists the sites and how many opportunities each has produced. `/web_off <id>` and `/web_on <id>` pause or resume one.
+- `/web_add https://site.com/feed` adds any site that has an RSS or Atom feed. `/web_scan` scans right now.
+- The dashboard's Channels tab has the same list with switches.
+
+### The same opportunity from many sources
+
+When several channels or websites announce the same opportunity, you get it once. ScoutAI compares the registration links in the posts and then the titles and deadlines of what it already saved. Copies of things you already have are skipped, including ones you dismissed.
+
+### Google Calendar reminders
+
+When you press **Plan** or **Working** on an opportunity that has a deadline, ScoutAI puts it on your Google Calendar:
+a bar from 10 days before the deadline until the deadline, plus a 9:00 event on the first day with a popup and email reminder, so your phone buzzes. Set `CALENDAR_REMIND_DAYS=10,3,1` in `.env` to get more reminders. Moving it to Finished or Dismissed, changing its deadline, or deleting it updates the calendar. Opportunities without a deadline are skipped; set a deadline and it is added. `/calendar` syncs everything that is already Planned or Working.
+
+One-time setup (about 10 minutes, free, no billing needed):
+
+1. Go to https://console.cloud.google.com and create a project (any name).
+2. Open **APIs & Services > Library**, search for **Google Calendar API** and click **Enable**.
+3. Open **IAM & Admin > Service Accounts > Create service account** (any name, skip the optional steps). Open it, go to **Keys > Add key > Create new key > JSON**. A file downloads.
+4. Rename it `google_credentials.json` and put it in the ScoutAI folder. It is private, like `.env`, and is never uploaded to GitHub.
+5. Copy the service account's e-mail address (looks like `name@project.iam.gserviceaccount.com`).
+6. Open https://calendar.google.com signed in as the calendar's owner, hover the calendar under **My calendars**, click the three dots > **Settings and sharing**. Under **Share with specific people** add the service account's e-mail with the permission **Make changes to events**.
+7. In the same settings page, copy the **Calendar ID** (for your main calendar it is your Gmail address) into `.env`:
+
+   ```
+   GOOGLE_CALENDAR_ID=you@gmail.com
+   ```
+
+8. Restart ScoutAI and send `/calendar` to the bot. If something is wrong, the bot tells you what.
+
+### Running it in the cloud
+
+See [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md): which free hosts work (a free Oracle or Google VM), which don't (Render and similar sleep and erase files), and a one-command installer.
 
 ### On the dashboard
 
@@ -210,6 +249,10 @@ Then open http://localhost:8000.
 | `main.py` | Telegram clients, scoring pipeline, bot commands, digest scheduler |
 | `ai_evaluator.py` | Groq and Gemini calls, retries, and model fallbacks |
 | `database.py` | SQLite storage (`scout.db`) |
+| `web_sources.py` | Opportunity websites: feed list, fetching, batch triage |
+| `dedupe.py` | Finds the same opportunity posted in different words |
+| `calendar_sync.py` | Google Calendar events for Planned/Working items |
+| `deploy/`, `docs/` | Cloud installer and hosting guide |
 | `web_api.py`, `templates/index.html` | Dashboard API and single-page UI |
 | `config.py` | Reads `.env` |
 | `setup.py` | The first-run wizard |

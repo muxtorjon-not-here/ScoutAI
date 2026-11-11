@@ -1,3 +1,5 @@
+import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -6,6 +8,7 @@ import aiosqlite
 import uuid
 
 from config import DB_PATH, DEFAULT_PROFILE_PATH, INITIAL_CHANNELS
+from dedupe import find_duplicate
 from utils import parse_deadline_date
 
 NOT_SPECIFIED = "⚠️ Not specified (Tap to set)"
@@ -18,6 +21,18 @@ CREATE TABLE IF NOT EXISTS channels (
     last_message_id INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     title TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS web_sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    urls TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    custom INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS web_seen (
+    link TEXT PRIMARY KEY,
+    seen_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS user_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -72,6 +87,10 @@ async def init_db() -> None:
             await db.execute(
                 "ALTER TABLE seen_opportunities ADD COLUMN status TEXT DEFAULT 'UNTRACKED'"
             )
+        if "calendar_events" not in columns:
+            await db.execute("ALTER TABLE seen_opportunities ADD COLUMN calendar_events TEXT DEFAULT ''")
+        if "source_urls" not in columns:
+            await db.execute("ALTER TABLE seen_opportunities ADD COLUMN source_urls TEXT DEFAULT ''")
         async with db.execute("PRAGMA table_info(channels)") as cur:
             channel_columns = {row[1] for row in await cur.fetchall()}
         if "title" not in channel_columns:
@@ -135,9 +154,99 @@ async def add_channel(username: str, title: str = "") -> None:
 
 
 async def get_channel_titles() -> dict[str, str]:
+    """Display names for sources: chat/topic titles, plus 'web:<id>' keys for websites."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT username, title FROM channels WHERE title != ''") as cur:
-            return {row[0]: row[1] for row in await cur.fetchall()}
+            titles = {row[0]: row[1] for row in await cur.fetchall()}
+        async with db.execute("SELECT id, name FROM web_sources") as cur:
+            titles.update({f"web:{row[0]}": row[1] for row in await cur.fetchall()})
+    return titles
+
+
+# ---------- opportunity websites ----------
+
+async def sync_web_catalogue(catalogue: list[dict]) -> None:
+    """Adds new built-in sources and refreshes names/URLs of existing ones; a source the user
+    switched off stays off, and custom sources are never touched."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        for src in catalogue:
+            await db.execute(
+                "INSERT INTO web_sources (id, name, kind, urls, enabled, custom) VALUES (?, ?, ?, ?, 1, 0) "
+                "ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, "
+                "urls = excluded.urls WHERE custom = 0",
+                (src["id"], src["name"], src["kind"], json.dumps(src["urls"])),
+            )
+        await db.commit()
+
+
+async def get_web_sources(enabled_only: bool = False) -> list[dict]:
+    sql = "SELECT * FROM web_sources" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY name"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+        async with db.execute(
+            "SELECT channel_source, COUNT(*) FROM seen_opportunities "
+            "WHERE channel_source LIKE 'web:%' GROUP BY channel_source"
+        ) as cur:
+            found = {row[0][4:]: row[1] for row in await cur.fetchall()}
+    for row in rows:
+        row["urls"] = json.loads(row["urls"])
+        row["enabled"] = bool(row["enabled"])
+        row["custom"] = bool(row["custom"])
+        row["found"] = found.get(row["id"], 0)
+    return rows
+
+
+async def set_web_source_enabled(source_id: str, enabled: bool) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE web_sources SET enabled = ? WHERE id = ?", (1 if enabled else 0, source_id)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def add_custom_web_source(source_id: str, name: str, url: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO web_sources (id, name, kind, urls, enabled, custom) "
+            "VALUES (?, ?, 'rss', ?, 1, 1)",
+            (source_id, name, json.dumps([url])),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def remove_custom_web_source(source_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM web_sources WHERE id = ? AND custom = 1", (source_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def unseen_web_links(links: list[str]) -> set[str]:
+    """The subset of `links` that has not been looked at before."""
+    if not links:
+        return set()
+    seen: set[str] = set()
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i in range(0, len(links), 500):
+            chunk = links[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            async with db.execute(f"SELECT link FROM web_seen WHERE link IN ({marks})", chunk) as cur:
+                seen.update(row[0] for row in await cur.fetchall())
+    return set(links) - seen
+
+
+async def mark_web_seen(links: list[str]) -> None:
+    if not links:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "INSERT OR IGNORE INTO web_seen (link, seen_at) VALUES (?, ?)", [(l, _now()) for l in links]
+        )
+        await db.commit()
 
 
 async def remove_channel(username: str) -> bool:
@@ -215,19 +324,55 @@ async def save_opportunity(
     why_it_matches: str,
     notified: bool,
     status: str = "UNTRACKED",
+    source_urls: str = "",
 ) -> int:
-    """Inserts an opportunity and returns its id (0 if the post link was already saved)."""
+    """Inserts an opportunity and returns its id (0 if the post link was already saved).
+    `source_urls` holds the post's normalized external links, space separated, for duplicate checks."""
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT OR IGNORE INTO seen_opportunities (title, category, channel_source, "
             "deadline, deadline_date, score, urgency, post_link, summary, why_it_matches, "
-            "status, notified_in_digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, notified_in_digest, created_at, source_urls) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (title, category, channel_source, normalize_deadline_text(deadline),
              deadline_date or None, score, urgency, post_link, summary, why_it_matches,
-             status, 1 if notified else 0, _now()),
+             status, 1 if notified else 0, _now(), source_urls),
         )
         await db.commit()
         return cur.lastrowid if cur.rowcount else 0
+
+
+async def get_dedupe_candidates() -> list[dict]:
+    """Every stored opportunity, reduced to the fields duplicate detection compares."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, title, deadline_date, source_urls, status FROM seen_opportunities "
+            "ORDER BY id"
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def dismiss_existing_duplicates() -> int:
+    """One-time cleanup: untouched (UNTRACKED) copies of an earlier opportunity are moved to
+    Dismissed, never deleted, so they can still be restored from the dashboard."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM meta WHERE key = 'dedupe_v1'") as cur:
+            if await cur.fetchone():
+                return 0
+    kept: list[dict] = []
+    dismiss: list[int] = []
+    for row in await get_dedupe_candidates():
+        if find_duplicate(row["title"], row["deadline_date"], [], kept) and row["status"] == "UNTRACKED":
+            dismiss.append(row["id"])
+        else:
+            kept.append(row)
+    async with aiosqlite.connect(DB_PATH) as db:
+        for opp_id in dismiss:
+            await db.execute("UPDATE seen_opportunities SET status = 'DISMISSED' WHERE id = ?", (opp_id,))
+        await db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('dedupe_v1', '1')")
+        await db.commit()
+    return len(dismiss)
 
 
 async def get_opportunity_by_id(opp_id: int) -> Optional[dict]:
@@ -238,12 +383,30 @@ async def get_opportunity_by_id(opp_id: int) -> Optional[dict]:
             return dict(row) if row else None
 
 
+change_hooks: list = []  # async callables (opp_id, deleted_item_or_None), e.g. the calendar sync
+_background: set = set()
+
+
+def _fire_change(opp_id: int, deleted_item: Optional[dict] = None) -> None:
+    for hook in change_hooks:
+        task = asyncio.get_running_loop().create_task(hook(opp_id, deleted_item))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+
+
+async def set_calendar_events(opp_id: int, value: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE seen_opportunities SET calendar_events = ? WHERE id = ?", (value, opp_id))
+        await db.commit()
+
+
 async def update_opportunity_status(opp_id: int, status: str) -> None:
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status {status!r}")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE seen_opportunities SET status = ? WHERE id = ?", (status, opp_id))
         await db.commit()
+    _fire_change(opp_id)
 
 
 _AUTO = object()
@@ -262,6 +425,7 @@ async def update_opportunity_deadline(
             (normalize_deadline_text(new_deadline), deadline_date or None, opp_id),
         )
         await db.commit()
+    _fire_change(opp_id)
 
 
 _ORDER = "ORDER BY deadline_date IS NULL, deadline_date ASC, score DESC, id DESC"
@@ -354,10 +518,14 @@ async def create_manual_opportunity(
 
 
 async def delete_opportunity(opp_id: int) -> bool:
+    item = await get_opportunity_by_id(opp_id)
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("DELETE FROM seen_opportunities WHERE id = ?", (opp_id,))
         await db.commit()
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        _fire_change(opp_id, item)
+    return deleted
 
 
 async def get_all_opportunities(status: Optional[str] = None, min_score: int = 1) -> list[dict]:

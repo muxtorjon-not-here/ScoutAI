@@ -52,6 +52,19 @@ AI_API_KEY = _v["AI_API_KEY"]
 # Optional: with a password the dashboard also opens to other devices on your network (your phone);
 # without one it only listens on this computer.
 WEB_PASSWORD = os.getenv("WEB_PASSWORD", "").strip()
+WEB_HOST = os.getenv("WEB_HOST", "").strip() or ("0.0.0.0" if WEB_PASSWORD else "127.0.0.1")
+
+# Optional Google Calendar sync for Planned/Working opportunities (see README)
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "").strip()
+GOOGLE_CREDENTIALS_FILE = Path(
+    os.getenv("GOOGLE_CREDENTIALS_FILE", "").strip() or BASE_DIR / "google_credentials.json"
+)
+TIMEZONE = os.getenv("TIMEZONE", "").strip() or "Asia/Tashkent"
+# Days before the deadline on which you get a calendar notification, e.g. "10" or "10,3,1"
+CALENDAR_REMIND_DAYS = sorted(
+    {int(d) for d in os.getenv("CALENDAR_REMIND_DAYS", "10").replace(" ", "").split(",") if d.isdigit()},
+    reverse=True,
+) or [10]
 
 INITIAL_CHANNELS = [
     c.strip().lstrip("@").lower()

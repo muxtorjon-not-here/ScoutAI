@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from pydantic import BaseModel, Field
 
 import database as db
+import web_sources
 from config import BASE_DIR, WEB_PASSWORD
 from utils import normalize_channel, parse_channels, source_label, source_url
 
@@ -48,14 +49,17 @@ button{background:#6366f1;border:0;font-weight:600}p{color:#f87171;margin:0;min-
 
 
 def _is_authed(request: Request) -> bool:
-    return hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), _AUTH_TOKEN)
+    """The browser sends the login cookie; the mobile app sends the same token as a Bearer header."""
+    bearer = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    supplied = request.cookies.get(AUTH_COOKIE, "") or bearer
+    return hmac.compare_digest(supplied, _AUTH_TOKEN)
 
 
 @app.middleware("http")
 async def guard(request: Request, call_next):
     if WEB_PASSWORD:
         # Network mode: any host name is fine, but every page and API call needs the login cookie.
-        if request.url.path == "/login" or _is_authed(request):
+        if request.url.path in ("/login", "/api/login") or _is_authed(request):
             return await call_next(request)
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
@@ -66,6 +70,32 @@ async def guard(request: Request, call_next):
     if host not in ALLOWED_HOSTS:
         return JSONResponse({"detail": "Forbidden host"}, status_code=403)
     return await call_next(request)
+
+
+class LoginIn(BaseModel):
+    password: str = Field(max_length=500)
+
+
+@app.post("/api/login")
+async def api_login(body: LoginIn):
+    """For the mobile app: exchanges the dashboard password for a token to send as
+    'Authorization: Bearer <token>'. Shares the browser login's brute-force lockout."""
+    if time.time() < _failed_logins["until"]:
+        raise HTTPException(429, "Too many attempts. Wait a minute.")
+    if WEB_PASSWORD and hmac.compare_digest(body.password.encode(), WEB_PASSWORD.encode()):
+        _failed_logins["count"] = 0
+        return {"token": _AUTH_TOKEN}
+    _failed_logins["count"] += 1
+    if _failed_logins["count"] >= 5:
+        _failed_logins.update(count=0, until=time.time() + 60)
+    await asyncio.sleep(1)
+    raise HTTPException(401, "Wrong password")
+
+
+@app.get("/api/ping")
+async def ping():
+    """Lets the app check that its saved token is still accepted."""
+    return {"ok": True}
 
 
 @app.get("/login", include_in_schema=False)
@@ -213,6 +243,50 @@ async def remove_channel(username: str):
     if not await db.remove_channel(normalize_channel(username) or username):
         raise HTTPException(404, "Channel is not monitored")
     return {"removed": username}
+
+
+# ---------- opportunity websites ----------
+
+class WebSourceIn(BaseModel):
+    url: str = Field(min_length=8, max_length=500)
+
+
+class EnabledIn(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/web_sources")
+async def list_web_sources():
+    return {"sources": await db.get_web_sources()}
+
+
+@app.post("/api/web_sources", status_code=201)
+async def add_web_source(body: WebSourceIn):
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "The address must start with http:// or https://")
+    try:
+        name = await web_sources.validate_feed(url)
+    except ValueError as exc:
+        raise HTTPException(400, f"Not a usable RSS/Atom feed: {exc}")
+    source_id = web_sources.source_id_for(url)
+    if not await db.add_custom_web_source(source_id, name, url):
+        raise HTTPException(409, f"{source_id} is already in the list")
+    return {"id": source_id, "name": name}
+
+
+@app.patch("/api/web_sources/{source_id}")
+async def toggle_web_source(source_id: str, body: EnabledIn):
+    if not await db.set_web_source_enabled(source_id, body.enabled):
+        raise HTTPException(404, "Unknown website")
+    return {"id": source_id, "enabled": body.enabled}
+
+
+@app.delete("/api/web_sources/{source_id}")
+async def remove_web_source(source_id: str):
+    if not await db.remove_custom_web_source(source_id):
+        raise HTTPException(404, "Only websites you added yourself can be removed")
+    return {"removed": source_id}
 
 
 # ---------- scan ----------

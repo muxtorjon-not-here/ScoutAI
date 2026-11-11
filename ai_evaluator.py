@@ -25,7 +25,7 @@ GEMINI_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-flash-lite-l
 _gemini_state = {"good": None}
 
 SYSTEM_PROMPT = """You are ScoutAI, a strict opportunity-screening assistant for one specific person.
-You receive a Telegram channel post, the person's profile, today's date, and titles of opportunities \
+You receive a post from a Telegram channel or a listing from an opportunity website, the person's profile, today's date, and titles of opportunities \
 already sent to them. Decide whether the post is a genuinely valuable, still-actionable opportunity for THIS person.
 
 Rules:
@@ -123,7 +123,7 @@ def _extract_json(raw: str) -> dict:
         return json.loads(match.group(0))
 
 
-async def _call_groq(client: httpx.AsyncClient, user_prompt: str) -> str:
+async def _call_groq(client: httpx.AsyncClient, system: str, user_prompt: str) -> str:
     # Models get retired on Groq; walk the list when one returns 404.
     for model in sorted(GROQ_MODELS, key=lambda m: m != _groq_state["good"]):
         resp = await client.post(
@@ -132,7 +132,7 @@ async def _call_groq(client: httpx.AsyncClient, user_prompt: str) -> str:
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": user_prompt},
                 ],
                 "response_format": {"type": "json_object"},
@@ -148,9 +148,9 @@ async def _call_groq(client: httpx.AsyncClient, user_prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-async def _call_gemini(client: httpx.AsyncClient, user_prompt: str) -> str:
+async def _call_gemini(client: httpx.AsyncClient, system: str, user_prompt: str) -> str:
     body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
     }
@@ -169,25 +169,17 @@ async def _call_gemini(client: httpx.AsyncClient, user_prompt: str) -> str:
     return "".join(p.get("text", "") for p in parts)
 
 
-async def evaluate_message(
-    text: str, profile: str, today: str, recent_titles: list[str]
-) -> Optional[Evaluation]:
-    """Returns an Evaluation, or None if the AI provider was unreachable (retry later).
-    Unparseable/blocked answers yield a non-opportunity so the post is skipped."""
-    if not passes_prefilter(text):
-        return Evaluation()
-
-    prompt = _build_user_prompt(text, profile, today, recent_titles)
+async def _ask(system: str, prompt: str) -> Optional[str]:
+    """Sends one prompt to the configured provider with retries. Returns the raw answer, "" when
+    the provider answered with nothing usable, or None when it was unreachable (retry later)."""
     call = _call_groq if AI_API_KEY.startswith("gsk_") else _call_gemini
-
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         for attempt in range(len(RETRY_DELAYS) + 1):
             try:
-                raw = await call(client, prompt)
-                break
+                return await call(client, system, prompt)
             except (KeyError, IndexError) as exc:
                 log.warning("AI returned no usable content: %r", exc)
-                return Evaluation()
+                return ""
             except (httpx.HTTPStatusError, httpx.TransportError) as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 retryable = status is None or status == 429 or status >= 500
@@ -202,9 +194,41 @@ async def evaluate_message(
                         pass
                 log.warning("AI rate-limited/unavailable (%s); retrying in %.0fs", status, delay)
                 await asyncio.sleep(delay)
+    return None
 
+
+async def evaluate_message(
+    text: str, profile: str, today: str, recent_titles: list[str]
+) -> Optional[Evaluation]:
+    """Returns an Evaluation, or None if the AI provider was unreachable (retry later).
+    Unparseable/blocked answers yield a non-opportunity so the post is skipped."""
+    if not passes_prefilter(text):
+        return Evaluation()
+
+    raw = await _ask(SYSTEM_PROMPT, _build_user_prompt(text, profile, today, recent_titles))
+    if raw is None:
+        return None
     try:
         return Evaluation.model_validate(_extract_json(raw))
     except Exception as exc:  # malformed JSON or schema mismatch
         log.warning("Could not parse AI output (%r): %.200s", exc, raw)
         return Evaluation()
+
+
+TRIAGE_PROMPT = """You screen listings from opportunity websites for ONE person, using only each listing's title and first lines. Keep a listing if it could plausibly be a real match for the profile: eligible location or open worldwide, fitting level/age and field. Drop clear mismatches: restricted to other countries or regions, wrong level or age, paid jobs for experienced people, ads, news and general advice articles. When unsure, keep it.
+Respond with ONLY a JSON object: {"keep": [numbers of the listings to keep]}."""
+
+
+async def triage_listings(profile: str, listings: list[tuple[str, str]]) -> Optional[set[int]]:
+    """Cheap first pass over many (title, snippet) pairs in one AI call. Returns the zero-based
+    indexes worth a full evaluation, or None if the provider was unreachable (retry later)."""
+    lines = "\n".join(f"{i + 1}. {title} — {snippet[:200]}" for i, (title, snippet) in enumerate(listings))
+    raw = await _ask(TRIAGE_PROMPT, f"PERSON'S PROFILE:\n{profile}\n\nLISTINGS:\n{lines}")
+    if raw is None:
+        return None
+    try:
+        keep = _extract_json(raw).get("keep", [])
+        return {int(n) - 1 for n in keep if 0 < int(n) <= len(listings)}
+    except Exception as exc:
+        log.warning("Could not parse triage output (%r): %.200s", exc, raw)
+        return set(range(len(listings)))  # unreadable answer: evaluate everything rather than drop it
