@@ -136,7 +136,7 @@ When several channels or websites announce the same opportunity, you get it once
 ### Google Calendar reminders
 
 When you press **Plan** or **Working** on an opportunity that has a deadline, ScoutAI puts it on your Google Calendar:
-a bar from 10 days before the deadline until the deadline, plus a 9:00 event on the first day with a popup and email reminder, so your phone buzzes. Set `CALENDAR_REMIND_DAYS=10,3,1` in `.env` to get more reminders. Moving it to Finished or Dismissed, changing its deadline, or deleting it updates the calendar. Opportunities without a deadline are skipped; set a deadline and it is added. `/calendar` syncs everything that is already Planned or Working.
+a bar from 5 days before the deadline until the deadline, plus a 9:00 event on the first day with a popup and email reminder, so your phone buzzes. Set `CALENDAR_REMIND_DAYS=5,2,1` in `.env` to get more reminders. Moving it to Finished or Dismissed, changing its deadline, or deleting it updates the calendar. Opportunities without a deadline are skipped; set a deadline and it is added. `/calendar` syncs everything that is already Planned or Working.
 
 One-time setup (about 10 minutes, free, no billing needed):
 

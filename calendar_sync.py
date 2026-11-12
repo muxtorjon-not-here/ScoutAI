@@ -1,7 +1,7 @@
 """Puts Planned and Working opportunities on Google Calendar.
 
 For each one it creates an all-day bar from N days before the deadline up to the deadline, plus a
-timed 09:00 event on the first notification day (default 10 days before) whose popup and email
+timed 09:00 event on the first notification day (default 5 days before) whose popup and email
 reminders fire right away, so the phone buzzes. Moving an opportunity to Finished/Dismissed/Inbox,
 changing its deadline, or deleting it updates or removes those events.
 

@@ -60,11 +60,11 @@ GOOGLE_CREDENTIALS_FILE = Path(
     os.getenv("GOOGLE_CREDENTIALS_FILE", "").strip() or BASE_DIR / "google_credentials.json"
 )
 TIMEZONE = os.getenv("TIMEZONE", "").strip() or "Asia/Tashkent"
-# Days before the deadline on which you get a calendar notification, e.g. "10" or "10,3,1"
+# Days before the deadline on which you get a calendar notification, e.g. "5" or "5,2,1"
 CALENDAR_REMIND_DAYS = sorted(
-    {int(d) for d in os.getenv("CALENDAR_REMIND_DAYS", "10").replace(" ", "").split(",") if d.isdigit()},
+    {int(d) for d in os.getenv("CALENDAR_REMIND_DAYS", "5").replace(" ", "").split(",") if d.isdigit()},
     reverse=True,
-) or [10]
+) or [5]
 
 INITIAL_CHANNELS = [
     c.strip().lstrip("@").lower()
