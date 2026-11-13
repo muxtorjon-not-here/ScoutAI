@@ -9,7 +9,7 @@ import uuid
 
 from config import DB_PATH, DEFAULT_PROFILE_PATH, INITIAL_CHANNELS
 from dedupe import find_duplicate
-from utils import parse_deadline_date
+from utils import infer_tags, parse_deadline_date
 
 NOT_SPECIFIED = "⚠️ Not specified (Tap to set)"
 VALID_STATUSES = ("UNTRACKED", "PLANNED", "WORKING", "FINISHED", "DISMISSED")
@@ -87,6 +87,10 @@ async def init_db() -> None:
             await db.execute(
                 "ALTER TABLE seen_opportunities ADD COLUMN status TEXT DEFAULT 'UNTRACKED'"
             )
+        if "tags" not in columns:
+            await db.execute("ALTER TABLE seen_opportunities ADD COLUMN tags TEXT DEFAULT ''")
+        if "insights" not in columns:
+            await db.execute("ALTER TABLE seen_opportunities ADD COLUMN insights TEXT DEFAULT ''")
         if "calendar_events" not in columns:
             await db.execute("ALTER TABLE seen_opportunities ADD COLUMN calendar_events TEXT DEFAULT ''")
         if "source_urls" not in columns:
@@ -114,6 +118,17 @@ async def init_db() -> None:
                 await db.execute(
                     "UPDATE seen_opportunities SET deadline_date = ? WHERE id = ?", (parsed, opp_id)
                 )
+
+        # Opportunities saved before tags existed get keyword-based tags (the AI refines them later)
+        async with db.execute(
+            "SELECT id, category, title, summary FROM seen_opportunities WHERE tags IS NULL OR tags = ''"
+        ) as cur:
+            untagged = await cur.fetchall()
+        for opp_id, category, title, summary in untagged:
+            await db.execute(
+                "UPDATE seen_opportunities SET tags = ? WHERE id = ?",
+                (",".join(infer_tags(category, title, summary)), opp_id),
+            )
 
         async with db.execute("SELECT COUNT(*) FROM user_profile") as cur:
             (count,) = await cur.fetchone()
@@ -325,6 +340,8 @@ async def save_opportunity(
     notified: bool,
     status: str = "UNTRACKED",
     source_urls: str = "",
+    tags: Optional[list] = None,
+    insights: Optional[dict] = None,
 ) -> int:
     """Inserts an opportunity and returns its id (0 if the post link was already saved).
     `source_urls` holds the post's normalized external links, space separated, for duplicate checks."""
@@ -332,14 +349,41 @@ async def save_opportunity(
         cur = await db.execute(
             "INSERT OR IGNORE INTO seen_opportunities (title, category, channel_source, "
             "deadline, deadline_date, score, urgency, post_link, summary, why_it_matches, "
-            "status, notified_in_digest, created_at, source_urls) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, notified_in_digest, created_at, source_urls, tags, insights) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (title, category, channel_source, normalize_deadline_text(deadline),
              deadline_date or None, score, urgency, post_link, summary, why_it_matches,
-             status, 1 if notified else 0, _now(), source_urls),
+             status, 1 if notified else 0, _now(), source_urls,
+             ",".join(tags or infer_tags(category, title, summary)),
+             json.dumps(insights) if insights and any(insights.values()) else ""),
         )
         await db.commit()
         return cur.lastrowid if cur.rowcount else 0
+
+
+async def set_insights(opp_id: int, tags: list, insights: dict) -> None:
+    """Stores the AI's tags and mentor-style benefits for one opportunity."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if tags:
+            await db.execute("UPDATE seen_opportunities SET tags = ? WHERE id = ?", (",".join(tags), opp_id))
+        await db.execute(
+            "UPDATE seen_opportunities SET insights = ? WHERE id = ?",
+            (json.dumps(insights) if insights and any(insights.values()) else "", opp_id),
+        )
+        await db.commit()
+
+
+async def get_missing_insights(today: str, limit: int) -> list[dict]:
+    """Open opportunities (not dismissed/finished, deadline not passed) that have no benefits yet."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM seen_opportunities WHERE (insights IS NULL OR insights = '') "
+            "AND status IN ('UNTRACKED', 'PLANNED', 'WORKING') AND channel_source != 'manual' "
+            "AND (deadline_date IS NULL OR deadline_date >= ?) ORDER BY id DESC LIMIT ?",
+            (today, limit),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
 
 
 async def get_dedupe_candidates() -> list[dict]:

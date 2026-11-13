@@ -154,3 +154,66 @@ def parse_deadline_date(text: str) -> str | None:
     if re.search(r"\btomorrow\b", s):
         return (today + timedelta(days=1)).isoformat()
     return None
+
+
+TAG_VOCAB = (
+    "Scholarship", "Competition", "Hackathon", "Research", "Internship", "Fellowship",
+    "Admissions Fair", "Conference", "Program/Camp", "Course/Training", "Grant", "Startup",
+    "Volunteering", "Networking Event", "Other",
+)
+_TAG_ALIASES = {
+    "scholarships": "Scholarship", "contest": "Competition", "competitions": "Competition",
+    "olympiad": "Competition", "hackathons": "Hackathon", "internships": "Internship",
+    "fellowships": "Fellowship", "fair": "Admissions Fair", "admissions": "Admissions Fair",
+    "conferences": "Conference", "program": "Program/Camp", "camp": "Program/Camp",
+    "programme": "Program/Camp", "course": "Course/Training", "training": "Course/Training",
+    "workshop": "Course/Training", "grants": "Grant", "funding": "Grant", "startups": "Startup",
+    "volunteer": "Volunteering", "event": "Networking Event", "networking": "Networking Event",
+}
+_TAG_KEYWORDS = (
+    ("Hackathon", ("hackathon", "buildathon", "datathon", "game jam", "hack day")),
+    ("Competition", ("competition", "contest", "olympiad", "challenge", "ctf", "tournament", "championship")),
+    ("Scholarship", ("scholarship", "stipend", "bursary", "tuition", "full ride", "full-ride")),
+    ("Research", ("research", "laboratory", " lab ", "thesis", "phd")),
+    ("Internship", ("internship", "intern ", "apprentice", "trainee", "placement")),
+    ("Fellowship", ("fellowship", "fellows")),
+    ("Admissions Fair", ("admissions fair", "university fair", "education fair", "open day")),
+    ("Conference", ("conference", "summit", "symposium", "forum")),
+    ("Program/Camp", ("summer school", "summer program", "camp", "bootcamp", "residency", "exchange")),
+    ("Course/Training", ("course", "training", "workshop", "masterclass", "webinar", "mentorship")),
+    ("Grant", ("grant", "seed funding")),
+    ("Startup", ("startup", "accelerator", "incubator", "pitch")),
+    ("Volunteering", ("volunteer",)),
+    ("Networking Event", ("meetup", "networking")),
+)
+
+
+def normalize_tags(raw) -> list[str]:
+    """Maps whatever the AI wrote onto the fixed tag vocabulary (max 4, no repeats)."""
+    if isinstance(raw, str):
+        raw = re.split(r"[,;/|]+", raw)
+    out: list[str] = []
+    lookup = {t.lower(): t for t in TAG_VOCAB}
+    for item in raw or []:
+        key = str(item).strip().lower()
+        tag = lookup.get(key) or _TAG_ALIASES.get(key)
+        if tag and tag not in out:
+            out.append(tag)
+    return out[:4]
+
+
+def infer_tags(*texts: str) -> list[str]:
+    """Keyword-based tags for opportunities saved before the AI produced tags."""
+    haystack = f" {' '.join(t or '' for t in texts).lower()} "
+    tags = [tag for tag, words in _TAG_KEYWORDS if any(w in haystack for w in words)]
+    return tags[:4] or ["Other"]
+
+
+def parse_insights(raw) -> dict:
+    """The stored benefits JSON as a dict with the five known keys (empty strings when missing)."""
+    import json
+    try:
+        data = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+    except ValueError:
+        data = {}
+    return {k: str(data.get(k) or "").strip() for k in ("prize", "portfolio", "experience", "networking", "mentor")}

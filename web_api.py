@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 import database as db
 import web_sources
 from config import BASE_DIR, WEB_PASSWORD
-from utils import normalize_channel, parse_channels, source_label, source_url
+from utils import normalize_channel, parse_channels, parse_insights, source_label, source_url
 
 log = logging.getLogger("scoutai.web")
 
@@ -28,6 +28,7 @@ class Hooks:
     """Filled in by main.py once the Telegram clients exist."""
     scan: Optional[Callable[[], Awaitable[int]]] = None
     add_channels: Optional[Callable[[str], Awaitable[dict]]] = None
+    insights: Optional[Callable[[int], Awaitable[bool]]] = None
 
 
 hooks = Hooks()
@@ -161,6 +162,15 @@ async def index():
 
 # ---------- opportunities ----------
 
+def _present(item: dict) -> dict:
+    """Row -> API shape: tags as a list, insights as a dict, internal fields hidden."""
+    item["tags"] = [t for t in (item.get("tags") or "").split(",") if t]
+    item["insights"] = parse_insights(item.get("insights"))
+    item.pop("calendar_events", None)
+    item.pop("source_urls", None)
+    return item
+
+
 async def _require(opp_id: int) -> dict:
     item = await db.get_opportunity_by_id(opp_id)
     if not item:
@@ -175,6 +185,7 @@ async def list_opportunities(status: Optional[str] = None, min_score: int = 1):
     titles = await db.get_channel_titles()
     items = await db.get_all_opportunities(status, min_score)
     for item in items:
+        _present(item)
         if item["channel_source"] != "manual":
             item["source_label"] = source_label(item["channel_source"], titles)
             item["source_url"] = source_url(item["channel_source"])
@@ -190,7 +201,7 @@ async def create_opportunity(body: OpportunityIn):
     opp_id = await db.create_manual_opportunity(**body.model_dump())
     if not opp_id:
         raise HTTPException(409, "An opportunity with that link already exists")
-    return await db.get_opportunity_by_id(opp_id)
+    return _present(await db.get_opportunity_by_id(opp_id))
 
 
 @app.patch("/api/opportunities/{opp_id}/status")
@@ -199,14 +210,25 @@ async def set_status(opp_id: int, body: StatusIn):
         raise HTTPException(400, f"status must be one of {', '.join(db.VALID_STATUSES)}")
     await _require(opp_id)
     await db.update_opportunity_status(opp_id, body.status)
-    return await db.get_opportunity_by_id(opp_id)
+    return _present(await db.get_opportunity_by_id(opp_id))
 
 
 @app.patch("/api/opportunities/{opp_id}/deadline")
 async def set_deadline(opp_id: int, body: DeadlineIn):
     await _require(opp_id)
     await db.update_opportunity_deadline(opp_id, body.deadline.strip())
-    return await db.get_opportunity_by_id(opp_id)
+    return _present(await db.get_opportunity_by_id(opp_id))
+
+
+@app.post("/api/opportunities/{opp_id}/insights")
+async def generate_opportunity_insights(opp_id: int):
+    """(Re)generates the tags and the 'what you gain' mentor notes with the AI."""
+    await _require(opp_id)
+    if hooks.insights is None:
+        raise HTTPException(503, "Telegram client is not ready yet")
+    if not await hooks.insights(opp_id):
+        raise HTTPException(502, "The AI provider is unavailable right now; try again in a minute")
+    return _present(await db.get_opportunity_by_id(opp_id))
 
 
 @app.delete("/api/opportunities/{opp_id}")

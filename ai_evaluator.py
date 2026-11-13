@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from config import AI_API_KEY
+from utils import TAG_VOCAB, normalize_tags
 
 log = logging.getLogger("scoutai.ai")
 
@@ -47,12 +48,23 @@ event date) as YYYY-MM-DD, resolving relative words like "tomorrow" or "this Fri
 the nearest upcoming year when none is given; "" if there is no clear date.
 - action_required: one short sentence on what the person must do (register, apply, etc.).
 - why_it_matches: one or two sentences tying the post to the profile.
+- tags: 1 to 4 labels chosen ONLY from: "Scholarship", "Competition", "Hackathon", "Research", "Internship", "Fellowship", "Admissions Fair", "Conference", "Program/Camp", "Course/Training", "Grant", "Startup", "Volunteering", "Networking Event", "Other". Use every label that truly applies (a research \
+competition is both "Competition" and "Research").
+- Act as the person's candid life mentor for what they gain by taking part. Use facts from the post; when the post \
+does not say, give the typical value for this kind of opportunity and say it is typical. One short sentence each:
+  prize: money, scholarships, funding or other prizes and who gets them ("No cash prize" if none).
+  portfolio_value: how it strengthens a CV, university applications or portfolio.
+  experience_gain: skills and personal growth.
+  networking_value: people, mentors, companies or communities they would meet.
+  mentor_take: two sentences of honest advice: effort versus reward, realistic odds, and whether it deserves \
+priority for this person right now.
 
 Respond with ONLY a JSON object with exactly these keys:
 is_opportunity (bool), is_duplicate (bool), is_past_event_recap (bool), relevance_score (int 1-10), \
 urgency (string), title (string), category (string), deadline_or_date (string), deadline_iso (string), \
 action_required (string), \
-why_it_matches (string)."""
+why_it_matches (string), tags (array of strings), prize (string), portfolio_value (string), \
+experience_gain (string), networking_value (string), mentor_take (string)."""
 
 
 class Evaluation(BaseModel):
@@ -67,6 +79,22 @@ class Evaluation(BaseModel):
     deadline_iso: str = ""
     action_required: str = ""
     why_it_matches: str = ""
+    tags: list[str] = Field(default_factory=list)
+    prize: str = ""
+    portfolio_value: str = ""
+    experience_gain: str = ""
+    networking_value: str = ""
+    mentor_take: str = ""
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _norm_tags(cls, v):
+        return normalize_tags(v)
+
+    def insights(self) -> dict:
+        return {"prize": self.prize, "portfolio": self.portfolio_value,
+                "experience": self.experience_gain, "networking": self.networking_value,
+                "mentor": self.mentor_take}
 
     @field_validator("deadline_iso", mode="before")
     @classmethod
@@ -90,8 +118,9 @@ class Evaluation(BaseModel):
         v = str(v or "").strip().upper()
         return v if v in ("IMMEDIATE", "DIGEST", "IGNORE") else "IGNORE"
 
-    @field_validator("title", "category", "deadline_or_date", "action_required",
-                     "why_it_matches", mode="before")
+    @field_validator("title", "category", "deadline_or_date", "action_required", "why_it_matches",
+                     "prize", "portfolio_value", "experience_gain", "networking_value",
+                     "mentor_take", mode="before")
     @classmethod
     def _to_str(cls, v):
         return "" if v is None else str(v).strip()
@@ -232,3 +261,42 @@ async def triage_listings(profile: str, listings: list[tuple[str, str]]) -> Opti
     except Exception as exc:
         log.warning("Could not parse triage output (%r): %.200s", exc, raw)
         return set(range(len(listings)))  # unreadable answer: evaluate everything rather than drop it
+
+
+INSIGHTS_PROMPT = f"""You are a candid life mentor for one specific person (their profile is given). For the \
+opportunity described, say what they would gain by taking part. Use facts from the description; when it does not say, \
+give the typical value for this kind of opportunity and say it is typical. Do not invent prize amounts.
+Respond with ONLY a JSON object with these keys, each a short sentence unless noted:
+tags (array of 1 to 4 labels chosen ONLY from: {", ".join(TAG_VOCAB)}), prize (money, scholarships, funding or other \
+prizes, or "No cash prize"), portfolio_value (how it strengthens a CV, applications or portfolio), experience_gain \
+(skills and personal growth), networking_value (people, mentors, companies, communities), mentor_take (two sentences: \
+effort versus reward, realistic odds, whether it deserves priority for this person now)."""
+
+
+async def generate_insights(profile: str, today: str, item: dict) -> Optional[dict]:
+    """Tags and mentor-style benefits for an already saved opportunity. Returns
+    {"tags": [...], "insights": {...}}, or None if the provider was unreachable."""
+    description = "\n".join(
+        f"{label}: {item[key]}" for label, key in (
+            ("Title", "title"), ("Category", "category"), ("Deadline", "deadline"),
+            ("What to do", "summary"), ("Why it matches the person", "why_it_matches"),
+        ) if item.get(key))
+    prompt = f"TODAY'S DATE: {today}\n\nPERSON'S PROFILE:\n{profile}\n\nOPPORTUNITY:\n{description}"
+    raw = await _ask(INSIGHTS_PROMPT, prompt)
+    if raw is None:
+        return None
+    try:
+        data = _extract_json(raw)
+        return {
+            "tags": normalize_tags(data.get("tags")),
+            "insights": {
+                "prize": str(data.get("prize") or "").strip(),
+                "portfolio": str(data.get("portfolio_value") or "").strip(),
+                "experience": str(data.get("experience_gain") or "").strip(),
+                "networking": str(data.get("networking_value") or "").strip(),
+                "mentor": str(data.get("mentor_take") or "").strip(),
+            },
+        }
+    except Exception as exc:
+        log.warning("Could not parse insights output (%r): %.200s", exc, raw)
+        return {"tags": [], "insights": {}}

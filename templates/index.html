@@ -175,12 +175,14 @@ const TOGGLE_STATUSES = ['PLANNED', 'WORKING', 'FINISHED'];
 const POLL_MS = 8000;
 
 const state = {
-  opps: [], stats: {}, channels: [], view: 'kanban', search: '', score: 'all', cat: null,
+  opps: [], stats: {}, channels: [], view: 'kanban', search: '', score: 'all', tagInc: prefSet('tagInc'), tagExc: prefSet('tagExc'),
+  tagMode: pref('tagMode', 'any'), gainOpen: new Set(),
   showDismissed: false, sort: { key: 'created_at', dir: 'desc' }, editing: null,
   hash: '', busy: 0, known: null, profileLoaded: false, expanded: new Set(),
   tab: pref('tab', 'UNTRACKED'), kSort: pref('ksort', 'deadline'),
 };
 function pref(key, fallback) { try { return localStorage.getItem('scoutai.' + key) || fallback; } catch { return fallback; } }
+function prefSet(key) { try { return new Set(JSON.parse(pref(key, '[]'))); } catch { return new Set(); } }
 function savePref(key, value) { try { localStorage.setItem('scoutai.' + key, value); } catch {} }
 
 const $ = (id) => document.getElementById(id);
@@ -270,8 +272,14 @@ function visible(includeDismissed = state.view === 'table' && state.showDismisse
     if (o.status === 'DISMISSED' && !includeDismissed) return false;
     if (state.score === 'high' && !(o.score >= 8)) return false;
     if (state.score === 'digest' && !(o.score >= 5 && o.score <= 7)) return false;
-    if (state.cat && o.category !== state.cat) return false;
-    if (q && !`${o.title} ${o.category} ${o.channel_source} ${o.source_label || ''} ${o.summary || ''}`.toLowerCase().includes(q)) return false;
+    const tags = o.tags || [];
+    if (state.tagExc.size && tags.some((t) => state.tagExc.has(t))) return false;
+    if (state.tagInc.size) {
+      const wanted = [...state.tagInc];
+      const ok = state.tagMode === 'all' ? wanted.every((t) => tags.includes(t)) : wanted.some((t) => tags.includes(t));
+      if (!ok) return false;
+    }
+    if (q && !`${o.title} ${o.category} ${(o.tags || []).join(' ')} ${o.channel_source} ${o.source_label || ''} ${o.summary || ''}`.toLowerCase().includes(q)) return false;
     return true;
   });
 }
@@ -296,13 +304,37 @@ function renderKpis() {
 
 function renderChips() {
   const counts = {};
-  state.opps.filter((o) => o.status !== 'DISMISSED').forEach((o) => { counts[o.category] = (counts[o.category] || 0) + 1; });
-  const cats = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12);
-  if (state.cat && !counts[state.cat]) state.cat = null;
-  $('catChips').innerHTML = cats.map(([c, n]) => {
-    const on = state.cat === c;
-    return `<button data-cat="${esc(c)}" class="chip rounded-full border px-2.5 py-1 text-xs transition ${on ? 'bg-indigo-500/20 border-indigo-400/60 text-indigo-200' : 'border-slate-700 text-slate-400 hover:border-slate-500'}">${esc(c)} <span class="opacity-60">${n}</span></button>`;
-  }).join('');
+  state.opps.filter((o) => o.status !== 'DISMISSED').forEach((o) => (o.tags || []).forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
+  [...state.tagInc, ...state.tagExc].forEach((t) => { counts[t] = counts[t] || 0; });
+  const active = state.tagInc.size + state.tagExc.size;
+  const chip = ([t, n]) => {
+    const inc = state.tagInc.has(t), exc = state.tagExc.has(t);
+    const cls = inc ? 'bg-indigo-500/25 border-indigo-400/70 text-indigo-100'
+      : exc ? 'bg-rose-500/15 border-rose-400/60 text-rose-200 line-through'
+      : 'border-slate-700 text-slate-400 hover:border-slate-500';
+    const hint = inc ? 'Showing this type. Click to exclude it instead.' : exc ? 'Excluded. Click to clear.' : 'Click to show this type.';
+    return `<button data-tag="${esc(t)}" title="${hint}" class="chip rounded-full border px-2.5 py-1 text-xs transition ${cls}">${inc ? '✓ ' : exc ? '🚫 ' : ''}${esc(t)} <span class="opacity-60">${n}</span></button>`;
+  };
+  const modeBtn = (m, label) => `<button data-act="tag-mode" data-mode="${m}" class="px-2 py-0.5 rounded ${state.tagMode === m ? 'bg-indigo-500/30 text-indigo-100' : 'text-slate-400 hover:text-slate-200'}">${label}</button>`;
+  const mode = state.tagInc.size > 1
+    ? `<span class="inline-flex items-center gap-1 text-[11px] text-slate-400 rounded-lg border border-slate-800 px-1.5 py-0.5">Match ${modeBtn('any', 'any')}${modeBtn('all', 'all')}</span>` : '';
+  const clear = active ? '<button data-act="tag-clear" class="text-xs text-slate-400 hover:text-slate-100 underline underline-offset-2">Clear</button>' : '';
+  const tags = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  $('catChips').innerHTML = tags.map(chip).join('') + mode + clear
+    + '<span class="w-full text-[11px] text-slate-500">Click a type to show only it, again to hide it, again to reset. Pick several to combine them.</span>';
+}
+
+function saveTags() {
+  savePref('tagInc', JSON.stringify([...state.tagInc]));
+  savePref('tagExc', JSON.stringify([...state.tagExc]));
+  savePref('tagMode', state.tagMode);
+}
+
+function cycleTag(tag) {
+  if (state.tagInc.has(tag)) { state.tagInc.delete(tag); state.tagExc.add(tag); }
+  else if (state.tagExc.has(tag)) state.tagExc.delete(tag);
+  else state.tagInc.add(tag);
+  saveTags(); render();
 }
 
 function cardHTML(o) {
@@ -320,18 +352,31 @@ function cardHTML(o) {
       <div class="text-slate-300 ${open ? '' : 'clamp-3'}">${esc(o.why_it_matches)}</div>
     </div>` : '';
   const summary = o.summary ? `<p class="text-[13px] text-slate-400 leading-relaxed ${open ? '' : 'clamp-3'}">${esc(o.summary)}</p>` : '';
+  const gain = o.insights || {};
+  const hasGain = Object.values(gain).some(Boolean);
+  const gainRows = [['💰', 'Prize', 'prize'], ['🧰', 'Portfolio', 'portfolio'], ['📈', 'Experience', 'experience'], ['🤝', 'Network', 'networking']]
+    .filter(([, , k]) => gain[k]).map(([i, l, k]) => `<div><span class="text-slate-500">${i} ${l}:</span> ${esc(gain[k])}</div>`).join('');
+  const gainBlock = hasGain && state.gainOpen.has(o.id) ? `
+    <div class="rounded-lg bg-emerald-500/[.06] border border-emerald-500/20 p-2.5 text-xs leading-relaxed space-y-1 text-slate-300">
+      <div class="text-[10px] uppercase tracking-wider text-emerald-300 font-semibold">🧭 What you gain</div>
+      ${gainRows}
+      ${gain.mentor ? `<div class="pt-1 italic text-emerald-100/90">🧑‍🏫 ${esc(gain.mentor)}</div>` : ''}
+    </div>` : '';
+  const gainBtn = isManual(o) ? '' : hasGain
+    ? `<button data-act="gain" data-id="${o.id}" class="text-xs text-emerald-300 hover:text-emerald-200">${state.gainOpen.has(o.id) ? 'Hide what you gain' : '🧭 What you gain'}</button>`
+    : `<button data-act="gen-gain" data-id="${o.id}" class="text-xs text-slate-500 hover:text-emerald-300">🧭 What would I gain?</button>`;
   const expandable = (o.summary || '').length > 130 || (o.why_it_matches || '').length > 150;
   return `
   <article class="card-in glass glass-hover rounded-2xl p-3.5 space-y-2.5" data-card="${o.id}">
     <div class="flex items-center justify-between gap-2">
       <div class="flex items-center gap-1.5 min-w-0">${scoreBadge(o)}
-        <span class="px-2 py-0.5 rounded-md text-[11px] border border-slate-700 text-slate-300 truncate">${esc(o.category)}</span></div>
+        ${((o.tags && o.tags.length) ? o.tags.slice(0, 3) : [o.category]).map((t) => `<span class="px-2 py-0.5 rounded-md text-[11px] border border-slate-700 text-slate-300 truncate">${esc(t)}</span>`).join('')}</div>
       ${channel}
     </div>
     <h3 class="font-semibold leading-snug text-[15px]">${esc(o.title)}</h3>
-    ${summary}${why}
+    ${summary}${why}${gainBlock}
     ${expandable ? `<button data-act="expand" data-id="${o.id}" class="text-xs text-slate-500 hover:text-slate-300">${open ? 'Show less' : 'Show more'}</button>` : ''}
-    <div>${deadlinePill(o)}</div>
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1">${deadlinePill(o)}${gainBtn}</div>
     <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-800/80">
       ${btn('status', '📌 Plan', 'PLANNED')}${btn('status', '🛠️ Work', 'WORKING')}${btn('status', '✅ Done', 'FINISHED')}
       ${status === 'DISMISSED'
@@ -569,6 +614,15 @@ async function setStatus(id, status, silent) {
   } catch (e) { o.status = prev; render(); toast(e.message, 'error'); }
 }
 
+async function generateGain(id) {
+  const o = find(id); if (!o) return;
+  toast('Asking your mentor…', 'info');
+  try {
+    const fresh = await mutate(() => api(`/api/opportunities/${id}/insights`, { method: 'POST' }));
+    Object.assign(o, fresh); state.gainOpen.add(id); state.hash = ''; render();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 function startDeadlineEdit(id, trigger) {
   const o = find(id); if (!o) return;
   const wrap = trigger.closest('[data-deadline-wrap]');
@@ -673,13 +727,13 @@ function closeModal() { $('modal').classList.add('hidden'); $('newForm').reset()
 
 /* ---------- events ---------- */
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-act],[data-view],[data-score],[data-cat],[data-sort],[data-tab]');
+  const t = e.target.closest('[data-act],[data-view],[data-score],[data-tag],[data-sort],[data-tab]');
   if (!t) return;
   const id = Number(t.dataset.id);
   if (t.dataset.view) return setView(t.dataset.view);
   if (t.dataset.tab) { state.tab = t.dataset.tab; savePref('tab', state.tab); return render(); }
   if (t.dataset.score) { state.score = t.dataset.score; return render(); }
-  if (t.dataset.cat) { state.cat = state.cat === t.dataset.cat ? null : t.dataset.cat; return render(); }
+  if (t.dataset.tag) return cycleTag(t.dataset.tag);
   if (t.dataset.sort) {
     const k = t.dataset.sort;
     state.sort = { key: k, dir: state.sort.key === k && state.sort.dir === 'desc' ? 'asc' : 'desc' };
@@ -692,6 +746,10 @@ document.addEventListener('click', (e) => {
     case 'dl-save': return saveDeadline(id);
     case 'dl-cancel': return cancelDeadlineEdit();
     case 'delete': return deleteOpp(id);
+    case 'tag-clear': state.tagInc.clear(); state.tagExc.clear(); saveTags(); return render();
+    case 'tag-mode': state.tagMode = t.dataset.mode; saveTags(); return render();
+    case 'gain': state.gainOpen.has(id) ? state.gainOpen.delete(id) : state.gainOpen.add(id); return render();
+    case 'gen-gain': return generateGain(id);
     case 'rm-channel': return removeChannel(t.dataset.name);
     case 'web-remove': return removeWebSource(t.dataset.id);
     case 'expand': state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id); return render();

@@ -121,6 +121,12 @@ ScoutAI can watch group chats too, not only channels.
 
 Groups are chatty, so the AI will spend more time filtering them. Topics are the better choice when the group has one.
 
+### Filtering by type and "what you gain"
+
+Every opportunity carries up to four type tags (Hackathon, Competition, Scholarship, Research, Internship, Fellowship and so on). On the dashboard, the chips under the search box work in three clicks: **show only this type**, **hide this type**, **back to normal**. Pick several to combine them: "Match any" shows competitions *or* scholarships, "Match all" shows only items that are, say, both a competition and research. Hide Hackathon to see everything except hackathons. Your choice is remembered.
+
+Each opportunity also gets a **🧭 What you gain** note, written like a candid mentor: the prize or money, what it adds to your portfolio, the experience you get, who you would meet, and one honest piece of advice on whether it deserves your time. It shows in the Telegram alert and on the dashboard card. Older opportunities are filled in automatically in the background; press **What would I gain?** on a card to get it right away. Where a post doesn't state something, the note says it is typical rather than inventing numbers.
+
 ### Opportunity websites
 
 Besides Telegram, ScoutAI reads a list of well-known opportunity websites every 2 hours (Opportunity Desk, Opportunities For Africans, Scholars4Dev, Scholarships Corner, Devpost hackathons, CTFtime, Codeforces and more). Each new listing goes through the same AI scoring as a Telegram post, after a quick title check that drops obvious mismatches, so only matches for your profile reach you.

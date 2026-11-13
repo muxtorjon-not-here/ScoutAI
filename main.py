@@ -18,10 +18,10 @@ import calendar_sync
 import database as db
 import web_api
 import web_sources
-from ai_evaluator import evaluate_message, passes_prefilter, triage_listings
+from ai_evaluator import evaluate_message, generate_insights, passes_prefilter, triage_listings
 from dedupe import extract_urls, find_duplicate
-from utils import (days_until, parse_channels, parse_deadline_date, source_label,
-                   source_url, split_source)
+from utils import (days_until, parse_channels, parse_deadline_date, parse_insights,
+                   source_label, source_url, split_source)
 from config import (ADMIN_USER_ID, API_HASH, API_ID, BASE_DIR, BOT_SESSION,
                     BOT_TOKEN, USER_SESSION, WEB_HOST, WEB_PASSWORD)
 
@@ -179,6 +179,15 @@ def render_card(item: dict, header: str | None = None) -> str:
         lines.append(f"🎯 {esc(item['why_it_matches'])}")
     if item.get("summary"):
         lines.append(f"✅ {esc(item['summary'])}")
+    gain = parse_insights(item.get("insights"))
+    if any(gain.values()):
+        lines.append("\n🧭 <b>What you gain</b>")
+        for icon, label, key in (("💰", "Prize", "prize"), ("🧰", "Portfolio", "portfolio"),
+                                 ("📈", "Experience", "experience"), ("🤝", "Network", "networking")):
+            if gain[key]:
+                lines.append(f"{icon} <b>{label}:</b> {esc(gain[key])}")
+        if gain["mentor"]:
+            lines.append(f"🧑‍🏫 <b>Mentor:</b> <i>{esc(gain['mentor'])}</i>")
     return "\n".join(lines)
 
 
@@ -439,6 +448,8 @@ async def process_text(channel: str, text: str, link: str, own_url: str = "") ->
         why_it_matches=ev.why_it_matches,
         notified=immediate,
         source_urls=" ".join(urls),
+        tags=ev.tags,
+        insights=ev.insights(),
     )
     if not opp_id:
         return True
@@ -529,6 +540,34 @@ async def catch_up_channels() -> int:
         except Exception:
             log.exception("catch-up failed for %s", lbl(username))
     return total
+
+
+# ---------- mentor insights ----------
+
+async def fill_insights(opp_id: int) -> bool:
+    """Asks the AI what taking part would give the user (prize, portfolio, experience, network,
+    mentor advice) and stores it. False when the opportunity is gone or the AI is unreachable."""
+    item = await db.get_opportunity_by_id(opp_id)
+    if not item:
+        return False
+    result = await generate_insights(
+        await db.get_profile(), datetime.now().strftime("%Y-%m-%d (%A)"), item)
+    if result is None:
+        return False
+    await db.set_insights(opp_id, result["tags"], result["insights"])
+    return True
+
+
+async def insights_backfill_loop() -> None:
+    """Gives opportunities saved before this feature their tags and benefits, a few at a time."""
+    await asyncio.sleep(300)
+    while True:
+        todo = await db.get_missing_insights(datetime.now().strftime("%Y-%m-%d"), 25)
+        for item in todo:
+            if not await fill_insights(item["id"]):
+                break
+            await asyncio.sleep(AI_DELAY_SECONDS)
+        await asyncio.sleep(600 if todo else 3600)
 
 
 # ---------- opportunity websites ----------
@@ -1036,6 +1075,7 @@ async def main() -> None:
     if calendar_sync.enabled():
         _spawn(calendar_sync.sync_all())  # backfills items already marked Planned/Working
     web_api.hooks.scan = scan_everything
+    web_api.hooks.insights = fill_insights
     web_api.hooks.add_channels = web_add_channels
     web_server = uvicorn.Server(uvicorn.Config(
         web_api.app, host=WEB_HOST, port=WEB_PORT, log_level="warning",
@@ -1065,6 +1105,7 @@ async def main() -> None:
     scheduler = asyncio.create_task(digest_scheduler())
     catchup = asyncio.create_task(catch_up_channels())
     web_scanner = asyncio.create_task(web_scan_loop())
+    insights_filler = asyncio.create_task(insights_backfill_loop())
     try:
         await asyncio.gather(
             user_client.run_until_disconnected(), bot_client.run_until_disconnected(), run_web()
@@ -1074,6 +1115,7 @@ async def main() -> None:
         scheduler.cancel()
         catchup.cancel()
         web_scanner.cancel()
+        insights_filler.cancel()
 
 
 if __name__ == "__main__":
